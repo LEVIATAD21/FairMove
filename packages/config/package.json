@@ -1,0 +1,14 @@
+{
+  "name": "@fairmove/config",
+  "version": "1.0.0",
+  "description": "Configuration utilities for FairMove environment variables and settings",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc build --project tsconfig.json",
+    "test": "echo 'No tests yet'"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
