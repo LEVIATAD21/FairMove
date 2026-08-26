@@ -1,7 +1,7 @@
 {
   "name": "@fairmove/design-system",
   "version": "1.0.0",
-  "description": "Shared design system components and branding for FairMove apps",
+  "description": "FairMove design system components and branding",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

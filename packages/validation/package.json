@@ -1,7 +1,7 @@
 {
   "name": "@fairmove/validation",
   "version": "1.0.0",
-  "description": "Shared validation schemas and utilities for FairMove",
+  "description": "FairMove validation schemas using Zod",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -10,6 +10,6 @@
   },
   "devDependencies": {
     "typescript": "^5.5.0",
-    "zod": "^3.23.8"
+    "zod": "^3.25.76"
   }
 }

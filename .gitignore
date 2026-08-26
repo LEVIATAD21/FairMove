@@ -6,6 +6,8 @@ node_modules/
 dist/
 /backend/dist/
 /packages/*/dist/
+/backend/src/*.js
+/packages/*/src/*.js
 
 # Environment
 .env*
@@ -30,5 +32,3 @@ Windows/
 
 # pnpm
 .pnpm-store/
-node_modules
-node_modules

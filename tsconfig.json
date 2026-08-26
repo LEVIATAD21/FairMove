@@ -17,27 +17,9 @@
     "moduleResolution": "node",
     "baseUrl": ".",
     "paths": {
-      "@fairmove/shared-types": ["packages/shared-types/src/*"],
-      "@fairmove/design-system": ["packages/design-system/src/*"],
-      "@fairmove/validation": ["packages/validation/src/*"],
-      "@fairmove/config": ["packages/config/src/*"],
-      "@fairmove/auth": ["packages/auth/src/*"],
-      "@fairmove/users": ["packages/users/src/*"],
-      "@fairmove/passengers": ["packages/passengers/src/*"],
-      "@fairmove/drivers": ["packages/drivers/src/*"],
-      "@fairmove/vehicles": ["packages/vehicles/src/*"],
-      "@fairmove/rides": ["packages/rides/src/*"],
-      "@fairmove/matching": ["packages/matching/src/*"],
-      "@fairmove/pricing": ["packages/pricing/src/*"],
-      "@fairmove/promotions": ["packages/promotions/src/*"],
-      "@fairmove/payments": ["packages/payments/src/*"],
-      "@fairmove/wallets": ["packages/wallets/src/*"],
-      "@fairmove/reserves": ["packages/reserves/src/*"],
-      "@fairmove/notifications": ["packages/notifications/src/*"],
-      "@fairmove/safety": ["packages/safety/src/*"],
-      "@fairmove/support": ["packages/support/src/*"],
-      "@fairmove/fraud": ["packages/fraud/src/*"]
+      "@fairmove/*": ["packages/*/src/*"]
     }
   },
-  "include": ["packages/**/src", "apps/**/src", "src"]
+  "include": ["src", "packages/**/src", "apps/**/src", ""],
+  "exclude": ["node_modules", ".pnpm"]
 }
