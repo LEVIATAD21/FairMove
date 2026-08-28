@@ -1,14 +1,14 @@
 import { Router } from "express";
-import { fraudEngine } from "../engine/fraud-engine";
-import { fraud_events, risk_scores } from "../db/schema";
+import { db, fraud_events, risk_scores } from "@fairmove/shared-db";
 import { eq } from "drizzle-orm";
+import { fraudEngine } from "./engine/fraud-engine";
 
 const router = Router();
 
 // Calculate user risk
 router.post("/risk/:userId", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
 
     const result = await fraudEngine.calculateUserRisk(userId);
 
@@ -48,9 +48,9 @@ router.post("/event", async (req, res) => {
 // Get user risk score
 router.get("/score/:userId", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
 
-    const existing = db.select().from(risk_scores).where(
+    const existing = await db.select().from(risk_scores).where(
       eq(risk_scores.userId, userId)
     );
 
@@ -68,11 +68,12 @@ router.get("/score/:userId", async (req, res) => {
 // Get fraud events for user
 router.get("/events/:userId", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
 
-    const events = db.select().from(fraud_events).where(
+    const { desc } = await import("drizzle-orm");
+    const events = await db.select().from(fraud_events).where(
       eq(fraud_events.userId, userId)
-    ).orderBy(fraud_events.createdAt.desc());
+    ).orderBy(desc(fraud_events.createdAt));
 
     return res.json(events);
   } catch (error) {

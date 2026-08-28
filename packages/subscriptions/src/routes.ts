@@ -1,13 +1,12 @@
 import { Router } from "express";
-import { subscriptionEngine } from "../engine/subscription-engine";
-import { v4 as uuidv4 } from "uuid";
+import { subscriptionEngine } from "./engine/subscription-engine";
 
 const router = Router();
 
 // Get user subscription
 router.get("/:userId", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
 
     const subscription = await subscriptionEngine.getSubscription(userId);
 
@@ -28,7 +27,7 @@ router.get("/:userId", async (req, res) => {
 // Activate subscription (trial)
 router.post("/:userId/activate", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
 
     const result = await subscriptionEngine.activateSubscription(userId);
 
@@ -42,7 +41,7 @@ router.post("/:userId/activate", async (req, res) => {
 // Cancel subscription
 router.post("/:userId/cancel", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
 
     const result = await subscriptionEngine.cancelSubscription(userId);
 
@@ -51,12 +50,12 @@ router.post("/:userId/cancel", async (req, res) => {
     console.error("Cancel subscription error:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
-}
+});
 
 // Check trial expiration
 router.post("/:userId/trial-status", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
 
     const result = await subscriptionEngine.checkTrialExpiration(userId);
 
@@ -65,12 +64,12 @@ router.post("/:userId/trial-status", async (req, res) => {
     console.error("Check trial status error:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
-}
+});
 
 // Charge monthly fee
 router.post("/:userId/charge", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
 
     const result = await subscriptionEngine.chargeMonthlyFee(userId);
 

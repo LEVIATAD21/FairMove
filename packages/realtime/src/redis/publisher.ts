@@ -1,5 +1,5 @@
 import Redis from "ioredis";
-import { RideEvent, RideEventType } from "../types";
+import type { RideEvent } from "../types";
 
 export class EventPublisher {
   private redis: Redis;
@@ -20,7 +20,7 @@ export class EventPublisher {
     }
   }
 
-  async publishRideRequested(event: Omit<RideRequestedEvent, "eventType" | "rideId" | "timestamp" | "occurredAt">): Promise<boolean> {
+  async publishRideRequested(event: any): Promise<boolean> {
     const message = {
       eventType: "RideRequested",
       rideId: uuidv4(),
@@ -32,7 +32,7 @@ export class EventPublisher {
     return this.publish(message as RideEvent);
   }
 
-  async publishDriverMatched(event: Omit<DriverMatchedEvent, "eventType" | "rideId" | "timestamp" | "occurredAt">): Promise<boolean> {
+  async publishDriverMatched(event: any): Promise<boolean> {
     const message = {
       eventType: "DriverMatched",
       rideId: uuidv4(),
@@ -44,7 +44,7 @@ export class EventPublisher {
     return this.publish(message as RideEvent);
   }
 
-  async publishDriverArrived(event: Omit<DriverArrivedEvent, "eventType" | "rideId" | "timestamp" | "occurredAt">): Promise<boolean> {
+  async publishDriverArrived(event: any): Promise<boolean> {
     const message = {
       eventType: "DriverArrived",
       rideId: uuidv4(),
@@ -56,7 +56,7 @@ export class EventPublisher {
     return this.publish(message as RideEvent);
   }
 
-  async publishRideStarted(event: Omit<RideStartedEvent, "eventType" | "rideId" | "timestamp" | "occurredAt">): Promise<boolean> {
+  async publishRideStarted(event: any): Promise<boolean> {
     const message = {
       eventType: "RideStarted",
       rideId: uuidv4(),
@@ -68,7 +68,7 @@ export class EventPublisher {
     return this.publish(message as RideEvent);
   }
 
-  async publishRideCompleted(event: Omit<RideCompletedEvent, "eventType" | "rideId" | "timestamp" | "occurredAt">): Promise<boolean> {
+  async publishRideCompleted(event: any): Promise<boolean> {
     const message = {
       eventType: "RideCompleted",
       rideId: uuidv4(),
@@ -80,7 +80,7 @@ export class EventPublisher {
     return this.publish(message as RideEvent);
   }
 
-  async publishRideCancelled(event: Omit<RideCancelledEvent, "eventType" | "rideId" | "timestamp" | "occurredAt">): Promise<boolean> {
+  async publishRideCancelled(event: any): Promise<boolean> {
     const message = {
       eventType: "RideCancelled",
       rideId: uuidv4(),

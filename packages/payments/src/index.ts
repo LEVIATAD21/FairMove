@@ -1,6 +1,3 @@
-export * from "./provider";
-
-// Payment provider interface
 export interface PaymentProvider {
   authorize(amount: number, currency: string, metadata?: Record<string, any>): Promise<{
     transactionId: string;
@@ -27,7 +24,6 @@ export interface PaymentProvider {
   }>;
 }
 
-// Mock payment provider for MVP
 export class MockPaymentProvider implements PaymentProvider {
   private transactions: Map<string, {
     amount: number;

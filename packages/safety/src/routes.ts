@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { db } from "../db";
-import { safety_events, trust_contacts, trip_codes, incidents, rides, users } from "../db/schema";
-import { eq, and } from "drizzle-orm";
+import { db, safety_events, trust_contacts, trip_codes, incidents } from "@fairmove/shared-db";
+import { eq } from "drizzle-orm";
+import { v4 as uuidv4 } from "uuid";
 
 const router = Router();
 
@@ -15,9 +15,9 @@ router.post("/sos", async (req, res) => {
     }
 
     // Create safety event
-    const eventId = uuidv4(); // will need import
+    const eventId = uuidv4();
     await db.insert(safety_events).values({
-      id: uuidv4(),
+      id: eventId,
       rideId,
       eventType: "sos",
       title: "SOS triggered",
@@ -39,11 +39,12 @@ router.post("/sos", async (req, res) => {
 // Get safety events for a ride
 router.get("/events/:rideId", async (req, res) => {
   try {
-    const { rideId } = req.params;
+    const { rideId } = req.params as { rideId: string };
 
-    const events = db.select().from(safety_events).where(
+    const { desc } = await import("drizzle-orm");
+    const events = await db.select().from(safety_events).where(
       eq(safety_events.rideId, rideId)
-    ).orderBy(safety_events.createdAt.desc());
+    ).orderBy(desc(safety_events.createdAt));
 
     return res.json(events);
   } catch (error) {
@@ -82,9 +83,9 @@ router.post("/trusted-contacts", async (req, res) => {
 // Get trusted contacts
 router.get("/trusted-contacts/:userId", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
 
-    const contacts = db.select().from(trust_contacts).where(
+    const contacts = await db.select().from(trust_contacts).where(
       eq(trust_contacts.userId, userId)
     );
 
@@ -137,11 +138,12 @@ router.post("/incidents", async (req, res) => {
 // Get incidents for a ride
 router.get("/incidents/:rideId", async (req, res) => {
   try {
-    const { rideId } = req.params;
+    const { rideId } = req.params as { rideId: string };
 
-    const incidentList = db.select().from(incidents).where(
+    const { desc } = await import("drizzle-orm");
+    const incidentList = await db.select().from(incidents).where(
       eq(incidents.rideId, rideId)
-    ).orderBy(incidents.createdAt.desc());
+    ).orderBy(desc(incidents.createdAt));
 
     return res.json(incidentList);
   } catch (error) {
@@ -183,7 +185,7 @@ router.post("/trip-codes/verify", async (req, res) => {
       return res.status(400).json({ error: "Code is required" });
     }
 
-    const tripCode = db.select().from(trip_codes).where(
+    const tripCode = await db.select().from(trip_codes).where(
       eq(trip_codes.code, code)
     );
 

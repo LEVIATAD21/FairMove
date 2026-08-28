@@ -1,6 +1,5 @@
-import { db } from "../db";
-import { wallets, wallet_accounts, ledger_transactions, ledger_entries, reserve_transactions } from "../db/schema";
-import { eq, and, sql } from "drizzle-orm";
+import { db, wallets, ledger_transactions, ledger_entries } from "@fairmove/shared-db";
+import { eq } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 
 interface TransactionOptions {
@@ -10,10 +9,8 @@ interface TransactionOptions {
 }
 
 export class WalletEngine {
-  constructor(private db = db) {}
-
   async getWallet(userId: string) {
-    const wallet = db.select().from(wallets).where(eq(wallets.userId, userId));
+    const wallet = await db.select().from(wallets).where(eq(wallets.userId, userId));
     return wallet.length > 0 ? wallet[0] : null;
   }
 
@@ -44,43 +41,36 @@ export class WalletEngine {
     newPendingBalance: number;
     newReserveBalance: number;
   }> {
-    const idempotencyKey = options.idempotencyKey || uuidv4();
     const amountInCents = Math.round(amount * 100);
     const description = options.description || "Wallet operation";
 
-    // Check if wallet exists, create if not
     let wallet = await this.getWallet(userId);
     if (!wallet) {
-      const newWallet = db.insert(wallets).values({
+      const newWallet = await db.insert(wallets).values({
         id: uuidv4(),
         userId,
-        available_balance: "0",
-        pending_balance: "0",
-        reserve_balance: "0",
+        available_balance: 0,
+        pending_balance: 0,
+        reserve_balance: 0,
         currency: "BRL",
       }).returning();
 
       wallet = newWallet[0];
     }
 
-    // Begin transaction
     const transactionId = uuidv4();
 
-    // Create ledger transaction
     await db.insert(ledger_transactions).values({
       id: transactionId,
-      transaction_id: idempotencyKey,
-      source_account: "wallet_operations",
-      destination_account: userId,
+      walletId: wallet.id,
+      transactionType: direction,
       amount: amountInCents,
       currency: "BRL",
-      direction: direction,
-      status: "completed",
       description,
       metadata: JSON.stringify(options.metadata || {}),
+      status: "completed",
     });
 
-    // Create ledger entry
     const entryId = uuidv4();
     const currentAvailable = Number(wallet.available_balance);
     const currentPending = Number(wallet.pending_balance);
@@ -90,38 +80,25 @@ export class WalletEngine {
     let newPending = currentPending;
     let newReserve = currentReserve;
 
-    // Apply the credit/debit to the appropriate balance
     if (direction === "credit") {
       newAvailable = currentAvailable + amountInCents;
     } else if (direction === "debit") {
       newAvailable = Math.max(0, currentAvailable - amountInCents);
     }
 
-    // Create ledger entry
     await db.insert(ledger_entries).values({
       id: entryId,
-      entry_id: uuidv4(),
-      transaction_id: transactionId,
-      account_id: userId,
+      transactionId: transactionId,
+      walletId: wallet.id,
+      entryType: direction,
       amount: amountInCents,
-      balance_after: newAvailable + newPending + newReserve,
-      entry_type: direction,
+      balanceAfter: newAvailable + newPending + newReserve,
     });
 
-    // Update wallet balance
-    const updateData: any = {
-      available_balance: newAvailable.toString(),
+    await db.update(wallets).set({
+      available_balance: newAvailable,
       updated_at: new Date(),
-    };
-
-    // If it's a debit that comes from pending, reduce pending
-    if (direction === "debit" && newAvailable < currentAvailable) {
-      const reduction = currentAvailable - newAvailable;
-      newPending = Math.max(0, currentPending - reduction);
-      updateData.available_balance = newAvailable.toString();
-    }
-
-    await db.update(wallets).set(updateData).where(eq(wallets.id, wallet.id));
+    }).where(eq(wallets.id, wallet.id));
 
     return {
       transactionId,
@@ -135,18 +112,15 @@ export class WalletEngine {
   async contributeToReserve(
     userId: string,
     amount: number,
-    purpose: string,
-    options: TransactionOptions = {}
+    _purpose: string,
+    _options: TransactionOptions = {}
   ): Promise<{
     transactionId: string;
     entryId: string;
     newReserveBalance: number;
   }> {
-    const idempotencyKey = options.idempotencyKey || uuidv4();
     const amountInCents = Math.round(amount * 100);
-    const description = options.description || "Reserve contribution";
 
-    // Get current wallet and reserve
     const wallet = await this.getWallet(userId);
     if (!wallet) {
       throw new Error("Wallet not found");
@@ -155,78 +129,55 @@ export class WalletEngine {
     const currentAvailable = Number(wallet.available_balance);
     const currentReserve = Number(wallet.reserve_balance);
 
-    // Check if enough available balance
     if (currentAvailable < amountInCents) {
       throw new Error("Insufficient available balance");
     }
 
     const transactionId = uuidv4();
 
-    // Create ledger transaction - debit from available, credit to reserve
     await db.insert(ledger_transactions).values({
       id: transactionId,
-      transaction_id: idempotencyKey,
-      source_account: "available_wallet",
-      destination_account: "reserve_wallet",
+      walletId: wallet.id,
+      transactionType: "reserve_contribution",
       amount: amountInCents,
       currency: "BRL",
-      direction: "credit", // Credit to reserve
+      description: "Reserve contribution",
       status: "completed",
-      description,
-      metadata: JSON.stringify(options.metadata || { purpose }),
     });
 
-    // Create ledger entry for available balance debit
     const entryIdAvailable = uuidv4();
     const newAvailable = currentAvailable - amountInCents;
 
     await db.insert(ledger_entries).values({
       id: entryIdAvailable,
-      entry_id: uuidv4(),
-      transaction_id: transactionId,
-      account_id: userId,
+      transactionId: transactionId,
+      walletId: wallet.id,
+      entryType: "debit",
       amount: amountInCents,
-      balance_after: newAvailable + currentReserve,
-      entry_type: "debit",
+      balanceAfter: newAvailable + currentReserve,
     });
 
-    // Create ledger entry for reserve balance credit
     const entryIdReserve = uuidv4();
     const newReserve = currentReserve + amountInCents;
 
     await db.insert(ledger_entries).values({
       id: entryIdReserve,
-      entry_id: uuidv4(),
-      transaction_id: transactionId,
-      account_id: userId,
+      transactionId: transactionId,
+      walletId: wallet.id,
+      entryType: "credit",
       amount: amountInCents,
-      balance_after: newAvailable + newReserve,
-      entry_type: "credit",
+      balanceAfter: newAvailable + newReserve,
     });
 
-    // Update wallet - reduce available, increase reserve
     await db.update(wallets).set({
-      available_balance: newAvailable.toString(),
-      reserve_balance: newReserve.toString(),
+      available_balance: newAvailable,
+      reserve_balance: newReserve,
       updated_at: new Date(),
     }).where(eq(wallets.id, wallet.id));
 
-    // Create reserve transaction record
-    await db.insert(reserve_transactions).values({
-      id: uuidv4(),
-      reserve_id: uuidv4(),
-      source: "ride_payment",
-      amount: amountInCents,
-      currency: "BRL",
-      status: "completed",
-      purpose,
-      description,
-      metadata: JSON.stringify(options.metadata || {}),
-    });
-
     return {
       transactionId,
-      entryId: entryIdAvailable, // Primary entry ID
+      entryId: entryIdAvailable,
       newReserveBalance: newReserve,
     };
   }
@@ -234,17 +185,15 @@ export class WalletEngine {
   async payoutFromReserve(
     userId: string,
     amount: number,
-    purpose: string,
-    options: TransactionOptions = {}
+    _purpose: string,
+    _options: TransactionOptions = {}
   ): Promise<{
     transactionId: string;
     entryId: string;
     newReserveBalance: number;
     newAvailableBalance: number;
   }> {
-    const idempotencyKey = options.idempotencyKey || uuidv4();
     const amountInCents = Math.round(amount * 100);
-    const description = options.description || "Reserve payout";
 
     const wallet = await this.getWallet(userId);
     if (!wallet) {
@@ -260,67 +209,45 @@ export class WalletEngine {
 
     const transactionId = uuidv4();
 
-    // Create ledger transaction - debit from reserve, credit to available
     await db.insert(ledger_transactions).values({
       id: transactionId,
-      transaction_id: idempotencyKey,
-      source_account: "reserve_wallet",
-      destination_account: "available_wallet",
+      walletId: wallet.id,
+      transactionType: "reserve_payout",
       amount: amountInCents,
       currency: "BRL",
-      direction: "debit", // Debit from reserve
+      description: "Reserve payout",
       status: "completed",
-      description,
-      metadata: JSON.stringify(options.metadata || { purpose }),
     });
 
-    // Create ledger entry for reserve balance debit
     const entryIdReserve = uuidv4();
     const newReserve = currentReserve - amountInCents;
 
     await db.insert(ledger_entries).values({
       id: entryIdReserve,
-      entry_id: uuidv4(),
-      transaction_id: transactionId,
-      account_id: userId,
+      transactionId: transactionId,
+      walletId: wallet.id,
+      entryType: "debit",
       amount: amountInCents,
-      balance_after: newReserve + currentAvailable,
-      entry_type: "debit",
+      balanceAfter: newReserve + currentAvailable,
     });
 
-    // Create ledger entry for available balance credit
     const entryIdAvailable = uuidv4();
     const newAvailable = currentAvailable + amountInCents;
 
     await db.insert(ledger_entries).values({
       id: entryIdAvailable,
-      entry_id: uuidv4(),
-      transaction_id: transactionId,
-      account_id: userId,
+      transactionId: transactionId,
+      walletId: wallet.id,
+      entryType: "credit",
       amount: amountInCents,
-      balance_after: newReserve + newAvailable,
-      entry_type: "credit",
+      balanceAfter: newReserve + newAvailable,
     });
 
-    // Update wallet - reduce reserve, increase available
     await db.update(wallets).set({
-      reserve_balance: newReserve.toString(),
-      available_balance: newAvailable.toString(),
+      reserve_balance: newReserve,
+      available_balance: newAvailable,
       updated_at: new Date(),
     }).where(eq(wallets.id, wallet.id));
-
-    // Create reserve transaction record
-    await db.insert(reserve_transactions).values({
-      id: uuidv4(),
-      reserve_id: uuidv4(),
-      source: "balance_payout",
-      amount: amountInCents,
-      currency: "BRL",
-      status: "completed",
-      purpose,
-      description,
-      metadata: JSON.stringify(options.metadata || {}),
-    });
 
     return {
       transactionId,

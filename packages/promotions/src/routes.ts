@@ -1,9 +1,7 @@
 import { Router } from "express";
-import { db } from "../db";
-import { campaigns, coupons, promotion_redemptions, rides } from "../db/schema";
-import { eq, and, gte, lte } from "drizzle-orm";
-import { applyPromotion, createCampaign, generateCouponCode } from "../engine/promotion-engine";
-import { v4 as uuidv4 } from "uuid";
+import { db, campaigns, coupons, promotion_redemptions } from "@fairmove/shared-db";
+import { eq } from "drizzle-orm";
+import { applyPromotion, createCampaign, generateCouponCode } from "./engine/promotion-engine";
 
 const router = Router();
 
@@ -54,7 +52,7 @@ router.post("/campaign", async (req, res) => {
 // Generate coupon
 router.post("/campaign/:campaignId/coupon", async (req, res) => {
   try {
-    const { campaignId } = req.params;
+    const { campaignId } = req.params as { campaignId: string };
 
     const code = generateCouponCode(campaignId);
 
@@ -68,7 +66,7 @@ router.post("/campaign/:campaignId/coupon", async (req, res) => {
 // Get campaigns
 router.get("/campaigns", async (req, res) => {
   try {
-    const allCampaigns = db.select().from(campaigns).where(eq(campaigns.is_active, true));
+    const allCampaigns = await db.select().from(campaigns).where(eq(campaigns.is_active, true));
 
     return res.json(allCampaigns);
   } catch (error) {

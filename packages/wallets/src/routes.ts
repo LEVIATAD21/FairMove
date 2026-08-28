@@ -1,16 +1,14 @@
 import { Router } from "express";
-import { db } from "../db";
-import { wallets, users } from "../db/schema";
+import { db, wallets } from "@fairmove/shared-db";
 import { eq } from "drizzle-orm";
-import { walletEngine } from "../engine/wallet-engine";
-import { v4 as uuidv4 } from "uuid";
+import { walletEngine } from "./engine/wallet-engine";
 
 const router = Router();
 
 // Get user wallet
 router.get("/:userId", async (req, res) => {
   try {
-    const { userId = req.params.userId;
+    const { userId } = req.params as { userId: string };
 
     const wallet = await walletEngine.getWallet(userId);
 
@@ -32,7 +30,7 @@ router.get("/:userId", async (req, res) => {
 // Credit wallet (example: from ride completion)
 router.post("/:userId/credit", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
     const { amount } = req.body;
 
     if (!amount) {
@@ -57,7 +55,7 @@ router.post("/:userId/credit", async (req, res) => {
 // Debit wallet (example: trip start)
 router.post("/:userId/debit", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
     const { amount } = req.body;
 
     if (!amount) {
@@ -82,7 +80,7 @@ router.post("/:userId/debit", async (req, res) => {
 // Contribute to reserve (from earnings)
 router.post("/:userId/contribute-reserve", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
     const { amount, purpose } = req.body;
 
     if (!amount) {
@@ -105,7 +103,7 @@ router.post("/:userId/contribute-reserve", async (req, res) => {
 // Payout from reserve
 router.post("/:userId/payout-reserve", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
     const { amount, purpose } = req.body;
 
     if (!amount) {

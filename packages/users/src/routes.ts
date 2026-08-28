@@ -1,6 +1,5 @@
 import { Router } from "express";
-import { db } from "../db";
-import { users, profiles, drivers } from "../db/schema";
+import { db, users, profiles, drivers, vehicles } from "@fairmove/shared-db";
 import { eq } from "drizzle-orm";
 import { sign, verify } from "jsonwebtoken";
 import { v4 as uuidv4 } from "uuid";
@@ -8,7 +7,7 @@ import { v4 as uuidv4 } from "uuid";
 const router = Router();
 
 // Get current user profile
-router.get("/me", async (req: Request, res: Response) => {
+router.get("/me", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
 
@@ -42,7 +41,7 @@ router.get("/me", async (req: Request, res: Response) => {
 });
 
 // Update profile
-router.put("/profile", async (req: Request, res: Response) => {
+router.put("/profile", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
 
@@ -85,7 +84,7 @@ router.put("/profile", async (req: Request, res: Response) => {
 });
 
 // Driver onboarding
-router.post("/driver/onboard", async (req: Request, res: Response) => {
+router.post("/driver/onboard", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
 
@@ -122,7 +121,7 @@ router.post("/driver/onboard", async (req: Request, res: Response) => {
     // Create vehicle first
     await db.insert(vehicles).values({
       id: vehicleId,
-      driverId, // This might cause issue - let's reconsider
+      driverId,
       brand,
       model,
       year,

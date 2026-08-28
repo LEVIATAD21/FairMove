@@ -1,13 +1,14 @@
-import { db } from "../db";
-import { fraud_events, risk_scores, users, rides } from "../db/schema";
+import { db, fraud_events, risk_scores } from "@fairmove/shared-db";
 import { eq, and } from "drizzle-orm";
+import { v4 as uuidv4 } from "uuid";
+import type { FraudEvent } from "@fairmove/shared-db";
 
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 
 export interface RiskCalculationResult {
   riskLevel: RiskLevel;
   score: number;
-  events: FraudEvent[];
+  events: any[];
   recommendations: string[];
 }
 
@@ -51,16 +52,7 @@ export class FraudEngine {
       events.push(event as FraudEvent);
     }
 
-    // 3. Ride Risk Analysis
-    const rideEvents = await db.select().from(fraud_events).where(
-      and(
-        eq(fraud_events.rideId, null), // We'll calculate per ride
-        // In a real implementation, we'd filter by specific ride
-      )
-    );
-
-    // For MVP, we'll use a simplified approach
-    // 4. Behavioral Risk Analysis
+    // 3. Behavioral Risk Analysis
     const behavioralEvents = await db.select().from(fraud_events).where(
       and(
         eq(fraud_events.userId, userId),
@@ -90,7 +82,7 @@ export class FraudEngine {
     score = Math.min(score, 100);
 
     // Update or create risk score record
-    const existing = db.select().from(risk_scores).where(
+    const existing = await db.select().from(risk_scores).where(
       eq(risk_scores.userId, userId)
     );
 

@@ -1,8 +1,7 @@
 import { Router } from "express";
-import { db } from "../db";
-import { pricing_quotes } from "../db/schema";
-import { calculateQuote, seedDefaultQuotes } from "../engine/calculator";
-import { v4 as uuidv4 } from "uuid";
+import { db, pricing_quotes } from "@fairmove/shared-db";
+import { eq } from "drizzle-orm";
+import { calculateQuote } from "./engine/calculator";
 
 const router = Router();
 
@@ -34,26 +33,19 @@ router.post("/quote", async (req, res) => {
 // Get quote by ID
 router.get("/quote/:id", async (req, res) => {
   try {
-    const { id } = req.params;
+    const { id } = req.params as { id: string };
 
-    const quote = db.select().from(pricing_quotes).where(
-      // In a real implementation, use proper eq
+    const quote = await db.select().from(pricing_quotes).where(
+      eq(pricing_quotes.id, id)
     );
 
-    return res.json(quote);
+    if (quote.length === 0) {
+      return res.status(404).json({ error: "Quote not found" });
+    }
+
+    return res.json(quote[0]);
   } catch (error) {
     console.error("Get quote error:", error);
-    return res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// Seed default quotes (for MVP)
-router.post("/seed", async (req, res) => {
-  try {
-    seedDefaultQuotes();
-    return res.json({ message: "Default quotes seeded successfully" });
-  } catch (error) {
-    console.error("Seed quotes error:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 });

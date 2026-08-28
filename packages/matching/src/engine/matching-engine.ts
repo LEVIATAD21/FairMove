@@ -1,6 +1,5 @@
-import { db } from "../db";
-import { rides, drivers, vehicles } from "../db/schema";
-import { eq } from "drizzle-orm";
+import { db, rides, drivers, vehicles } from "@fairmove/shared-db";
+import { eq, and } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 
 export interface DriverMatch {
@@ -11,7 +10,7 @@ export interface DriverMatch {
   vehicleType: string;
   distance: number;
   estimatedTime: number;
-  direction: string; // "NORTH", "SOUTH", "EAST", "WEST" or similar
+  direction: string;
 }
 
 export interface MatchingResult {
@@ -20,14 +19,12 @@ export interface MatchingResult {
   match: DriverMatch;
 }
 
-export function findNearbyDrivers(
+export async function findNearbyDrivers(
   passengerLat: number,
   passengerLng: number,
   vehicleType: "car" | "motorcycle" = "car",
   maxDistanceKm: number = 10
 ) {
-  // In a real implementation, this would use PostGIS or a geospatial query
-  // For MVP, we'll query all active drivers and filter client-side
   return db.select().from(drivers).where(eq(drivers.status, "online"));
 }
 
@@ -37,8 +34,7 @@ export function calculateDistance(
   lat2: number,
   lng2: number
 ): number {
-  // Haversine formula
-  const R = 6371; // Earth radius in km
+  const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLng = ((lng2 - lng1) * Math.PI) / 180;
   const a =
@@ -49,20 +45,18 @@ export function calculateDistance(
   return R * c;
 }
 
-export function matchDriverWithRide(
+export async function matchDriverWithRide(
   rideId: string,
   passengerLat: number,
   passengerLng: number
-): MatchingResult | null {
-  // Get the ride details
-  const ride = db.select().from(rides).where(eq(rides.id, rideId));
+): Promise<MatchingResult | null> {
+  const ride = await db.select().from(rides).where(eq(rides.id, rideId));
 
   if (ride.length === 0) {
     return null;
   }
 
-  // Get available drivers with vehicles
-  const availableDrivers = db.select({
+  const availableDrivers = await db.select({
     driver: drivers,
     vehicle: vehicles,
   }).from(drivers)
@@ -78,12 +72,10 @@ export function matchDriverWithRide(
   for (const { driver, vehicle } of availableDrivers) {
     if (!vehicle) continue;
 
-    // Filter by vehicle type if needed
     if (vehicle.vehicleType !== "car" && vehicle.vehicleType !== "motorcycle") {
       continue;
     }
 
-    // Calculate distance between passenger and driver
     const distance = calculateDistance(
       passengerLat,
       passengerLng,
@@ -91,20 +83,18 @@ export function matchDriverWithRide(
       Number(driver.currentLocationLng)
     );
 
-    // Filter by max distance
-    if (distance > 10) continue; // 10km max
+    if (distance > 10) continue;
 
-    // Prefer closer drivers and those with matching vehicle type
     if (distance < minDistance) {
       minDistance = distance;
       bestMatch = {
         driverId: driver.id,
-        driverName: driver.user?.name || "Motorista",
+        driverName: "Motorista",
         vehicleId: vehicle.id,
         vehiclePlate: vehicle.plate,
         vehicleType: vehicle.vehicleType,
         distance,
-        estimatedTime: Math.round(distance * 2), // approx 2 min per km
+        estimatedTime: Math.round(distance * 2),
         direction: "approaching",
       };
     }
@@ -113,9 +103,6 @@ export function matchDriverWithRide(
   if (!bestMatch) {
     return null;
   }
-
-  // Record the match
-  // In a real system, we'd update the ride status to DRIVER_ASSIGNED
 
   return {
     rideId,

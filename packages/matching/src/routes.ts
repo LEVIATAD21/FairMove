@@ -1,6 +1,5 @@
 import { Router } from "express";
-import { db } from "../db";
-import { rides, drivers, users } from "../db/schema";
+import { db, rides, drivers, vehicles } from "@fairmove/shared-db";
 import { eq, and } from "drizzle-orm";
 
 const router = Router();
@@ -8,9 +7,9 @@ const router = Router();
 // Request driver match for a ride
 router.post("/:rideId/match", async (req, res) => {
   try {
-    const { rideId } = req.params;
+    const { rideId } = req.params as { rideId: string };
 
-    const ride = db.select().from(rides).where(eq(rides.id, rideId));
+    const ride = await db.select().from(rides).where(eq(rides.id, rideId));
 
     if (ride.length === 0) {
       return res.status(404).json({ error: "Ride not found" });
@@ -22,7 +21,7 @@ router.post("/:rideId/match", async (req, res) => {
     }
 
     // Get available drivers
-    const availableDrivers = db.select({
+    const availableDrivers = await db.select({
       driver: drivers,
       vehicle: vehicles,
     }).from(drivers)
@@ -48,7 +47,7 @@ router.get("/drivers/nearby", async (req, res) => {
       return res.status(400).json({ error: "Latitude and longitude are required" });
     }
 
-    const drivers = db.select({
+    const nearbyDrivers = await db.select({
       driver: drivers,
       vehicle: vehicles,
     }).from(drivers)
@@ -58,7 +57,7 @@ router.get("/drivers/nearby", async (req, res) => {
         eq(drivers.available, true),
       ));
 
-    return res.json({ drivers: availableDrivers });
+    return res.json({ drivers: nearbyDrivers });
   } catch (error) {
     console.error("Get nearby drivers error:", error);
     return res.status(500).json({ error: "Internal server error" });

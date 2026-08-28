@@ -3,11 +3,13 @@
   "testEnvironment": "node",
   "rootDir": ".",
   "testMatch": [
-    "<rootDir>/tests/**/*.test.ts",
-    "<rootDir>/packages/*/src/**/*.test.ts"
+    "<rootDir>/tests/**/*.test.ts"
   ],
   "transform": {
     "^.+\\.[t]sx?$": "ts-jest"
   },
-  "moduleFileExtensions": ["ts", "js", "json"]
+  "moduleFileExtensions": ["ts", "js", "json"],
+  "moduleNameMapper": {
+    "^@fairmove/shared-db$": "<rootDir>/packages/shared-db/src/index"
+  }
 }

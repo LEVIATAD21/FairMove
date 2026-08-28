@@ -1,16 +1,14 @@
 import { Router } from "express";
-import { db } from "../db";
-import { emergency_reserves, reserve_transactions, drivers } from "../db/schema";
+import { db, emergency_reserves, reserve_transactions } from "@fairmove/shared-db";
 import { eq } from "drizzle-orm";
-import { reserveEngine } from "../engine/reserve-engine";
-import { v4 as uuidv4 } from "uuid";
+import { reserveEngine } from "./engine/reserve-engine";
 
 const router = Router();
 
 // Get driver's emergency reserve
 router.get("/:driverId", async (req, res) => {
   try {
-    const { driverId } = req.params;
+    const { driverId } = req.params as { driverId: string };
 
     const reserve = await reserveEngine.getReserve(driverId);
 
@@ -19,7 +17,7 @@ router.get("/:driverId", async (req, res) => {
     }
 
     // Initialize if not exists
-    const initialized = reserveEngine.initializeReserve(driverId);
+    const initialized = await reserveEngine.initializeReserve(driverId);
 
     return res.json({
       totalReserve: Number(initialized?.total_reserve) || 0,
@@ -40,7 +38,7 @@ router.get("/:driverId", async (req, res) => {
 // Contribute to reserve
 router.post("/:driverId/contribute", async (req, res) => {
   try {
-    const { driverId } = req.params;
+    const { driverId } = req.params as { driverId: string };
     const { amount, purpose } = req.body;
 
     if (!amount) {
@@ -67,7 +65,7 @@ router.post("/:driverId/contribute", async (req, res) => {
 // Payout from reserve
 router.post("/:driverId/payout", async (req, res) => {
   try {
-    const { driverId } = req.params;
+    const { driverId } = req.params as { driverId: string };
     const { amount, purpose } = req.body;
 
     if (!amount) {
@@ -89,11 +87,12 @@ router.post("/:driverId/payout", async (req, res) => {
 // Get reserve transaction history
 router.get("/:driverId/transactions", async (req, res) => {
   try {
-    const { driverId } = req.params;
+    const { driverId } = req.params as { driverId: string };
 
-    const transactions = db.select().from(reserve_transactions).where(
+    const { desc } = await import("drizzle-orm");
+    const transactions = await db.select().from(reserve_transactions).where(
       eq(reserve_transactions.reserveId, driverId)
-    ).orderBy(reserve_transactions.created_at.desc());
+    ).orderBy(desc(reserve_transactions.created_at));
 
     return res.json(transactions);
   } catch (error) {

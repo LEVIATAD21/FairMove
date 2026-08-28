@@ -1,5 +1,3 @@
-import { pgTable, text, integer, boolean } from "drizzle-orm/pg-core";
-
 const validTransitions: Record<string, string[]> = {
   REQUESTED: ["SEARCHING", "CANCELLED_BY_PASSENGER", "CANCELLED_BY_SYSTEM", "EXPIRED"],
   SEARCHING: ["DRIVER_ASSIGNED", "CANCELLED_BY_PASSENGER", "CANCELLED_BY_SYSTEM", "EXPIRED"],

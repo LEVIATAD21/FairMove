@@ -1,8 +1,7 @@
 import { Router } from "express";
-import { db } from "../db";
-import { rides, rideLocationEvents, users, drivers, vehicles } from "../db/schema";
-import { eq } from "drizzle-orm";
-import { rideStateMachine } from "../state/machine";
+import { db, rides, rideLocationEvents, users } from "@fairmove/shared-db";
+import { eq, desc } from "drizzle-orm";
+import { canTransition, transitionRide } from "./state/machine";
 import { v4 as uuidv4 } from "uuid";
 
 const router = Router();
@@ -24,7 +23,18 @@ router.post("/", async (req, res) => {
     }
 
     // Create ride
-    const { rideId, status } = await rideStateMachine.createRide(passengerId);
+    const rideId = uuidv4();
+    const status = "REQUESTED";
+
+    await db.insert(rides).values({
+      id: rideId,
+      passengerId,
+      status,
+      pickupLocationLat: pickupLocationLat ? String(pickupLocationLat) : "0",
+      pickupLocationLng: pickupLocationLng ? String(pickupLocationLng) : "0",
+      dropoffLocationLat: dropoffLocationLat ? String(dropoffLocationLat) : "0",
+      dropoffLocationLng: dropoffLocationLng ? String(dropoffLocationLng) : "0",
+    });
 
     // Record ride location event
     await db.insert(rideLocationEvents).values({
@@ -45,7 +55,7 @@ router.post("/", async (req, res) => {
 // Get ride by ID
 router.get("/:rideId", async (req, res) => {
   try {
-    const { rideId } = req.params;
+    const { rideId } = req.params as { rideId: string };
 
     const ride = await db.select().from(rides).where(eq(rides.id, rideId));
 
@@ -63,20 +73,32 @@ router.get("/:rideId", async (req, res) => {
 // Accept ride (driver)
 router.post("/:rideId/accept", async (req, res) => {
   try {
-    const { rideId } = req.params;
+    const { rideId } = req.params as { rideId: string };
     const { driverId } = req.body;
 
     if (!driverId) {
       return res.status(400).json({ error: "Driver ID is required" });
     }
 
-    const result = await rideStateMachine.startRide(rideId, driverId);
+    const ride = await db.select().from(rides).where(eq(rides.id, rideId));
+
+    if (ride.length === 0) {
+      return res.status(404).json({ error: "Ride not found" });
+    }
+
+    const currentStatus = ride[0].status;
+    const result = transitionRide(currentStatus, "DRIVER_ASSIGNED");
 
     if (!result.success) {
       return res.status(400).json({ error: result.error });
     }
 
-    return res.json({ rideId, status: result.rideStatus });
+    await db.update(rides).set({
+      status: "DRIVER_ASSIGNED",
+      driverId,
+    }).where(eq(rides.id, rideId));
+
+    return res.json({ rideId, status: "DRIVER_ASSIGNED" });
   } catch (error) {
     console.error("Accept ride error:", error);
     return res.status(500).json({ error: "Internal server error" });
@@ -86,20 +108,33 @@ router.post("/:rideId/accept", async (req, res) => {
 // Complete ride
 router.post("/:rideId/complete", async (req, res) => {
   try {
-    const { rideId } = req.params;
+    const { rideId } = req.params as { rideId: string };
     const { driverId, totalFare } = req.body;
 
     if (!driverId || !totalFare) {
       return res.status(400).json({ error: "Driver ID and total fare are required" });
     }
 
-    const result = await rideStateMachine.completeRide(rideId, driverId, totalFare);
+    const ride = await db.select().from(rides).where(eq(rides.id, rideId));
+
+    if (ride.length === 0) {
+      return res.status(404).json({ error: "Ride not found" });
+    }
+
+    const currentStatus = ride[0].status;
+    const result = transitionRide(currentStatus, "COMPLETED");
 
     if (!result.success) {
       return res.status(400).json({ error: result.error });
     }
 
-    return res.json({ rideId, status: result.rideStatus });
+    await db.update(rides).set({
+      status: "COMPLETED",
+      finalPassengerPrice: Math.round(totalFare * 100),
+      driverCredit: Math.round(totalFare * 100),
+    }).where(eq(rides.id, rideId));
+
+    return res.json({ rideId, status: "COMPLETED" });
   } catch (error) {
     console.error("Complete ride error:", error);
     return res.status(500).json({ error: "Internal server error" });
@@ -109,20 +144,33 @@ router.post("/:rideId/complete", async (req, res) => {
 // Cancel ride
 router.post("/:rideId/cancel", async (req, res) => {
   try {
-    const { rideId } = req.params;
+    const { rideId } = req.params as { rideId: string };
     const { cancelledBy, reason } = req.body;
 
     if (!cancelledBy) {
       return res.status(400).json({ error: "Cancelled by is required" });
     }
 
-    const result = await rideStateMachine.cancelRide(rideId, cancelledBy, reason);
+    const ride = await db.select().from(rides).where(eq(rides.id, rideId));
+
+    if (ride.length === 0) {
+      return res.status(404).json({ error: "Ride not found" });
+    }
+
+    const currentStatus = ride[0].status;
+    const cancelStatus = cancelledBy === "driver" ? "CANCELLED_BY_DRIVER" : "CANCELLED_BY_PASSENGER";
+    const result = transitionRide(currentStatus, cancelStatus);
 
     if (!result.success) {
       return res.status(400).json({ error: result.error });
     }
 
-    return res.json({ rideId, status: result.rideStatus });
+    await db.update(rides).set({
+      status: cancelStatus,
+      cancellationReason: reason || null,
+    }).where(eq(rides.id, rideId));
+
+    return res.json({ rideId, status: cancelStatus });
   } catch (error) {
     console.error("Cancel ride error:", error);
     return res.status(500).json({ error: "Internal server error" });
@@ -132,11 +180,11 @@ router.post("/:rideId/cancel", async (req, res) => {
 // Get ride history for user
 router.get("/history/:userId", async (req, res) => {
   try {
-    const { userId } = req.params;
+    const { userId } = req.params as { userId: string };
 
     const rideHistory = await db.select().from(rides).where(
       eq(rides.passengerId, userId)
-    ).orderBy(rides.createdAt.desc());
+    ).orderBy(desc(rides.createdAt));
 
     return res.json(rideHistory);
   } catch (error) {

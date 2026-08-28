@@ -10,16 +10,19 @@
     "resolveJsonModule": true,
     "outDir": "./dist",
     "rootDir": ".",
-    "declaration": true,
-    "declarationMap": true,
+    "declaration": false,
+    "declarationMap": false,
     "sourceMap": true,
-    "skipLibCheck": true,
     "moduleResolution": "node",
     "baseUrl": ".",
     "paths": {
-      "@fairmove/*": ["packages/*/src/*"]
+      "@fairmove/shared-db": ["packages/shared-db/src/index"],
+      "@fairmove/shared-types": ["packages/shared-types/src/index"],
+      "@fairmove/design-system": ["packages/design-system/src/index"],
+      "@fairmove/validation": ["packages/validation/src/index"],
+      "@fairmove/config": ["packages/config/src/index"]
     }
   },
-  "include": ["src", "packages/**/src", "apps/**/src", ""],
-  "exclude": ["node_modules", ".pnpm"]
+  "include": ["packages/**/src", "backend/src"],
+  "exclude": ["node_modules", "dist", "**/*.d.ts"]
 }

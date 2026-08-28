@@ -1,11 +1,17 @@
 import { Router } from "express";
-import { db } from "../db";
-import { users, sessions, verificationTokens, onboardingCompletion } from "../db/schema";
+import { db, users, sessions, verificationTokens, onboardingCompletion } from "@fairmove/shared-db";
 import { eq } from "drizzle-orm";
-import { compare } from "bcrypt";
-import { sign, verify } from "jsonwebtoken";
 import { v4 as uuidv4 } from "uuid";
-import { hashPassword, comparePassword } from "../utils/password";
+import { sign, verify } from "jsonwebtoken";
+import { hash, compare } from "bcrypt";
+
+async function hashPassword(password: string): Promise<string> {
+  return hash(password, 10);
+}
+
+async function comparePassword(password: string, hash: string): Promise<boolean> {
+  return compare(password, hash);
+}
 
 const router = Router();
 
@@ -146,7 +152,7 @@ router.post("/refresh-token", async (req, res) => {
 });
 
 // Verify token
-router.get("/verify", async (req: Request, res: Response) => {
+router.get("/verify", async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
 

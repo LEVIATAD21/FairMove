@@ -1,54 +1,47 @@
-import { db } from "../db";
-import { campaigns, coupons, promotion_redemptions, rides } from "../db/schema";
+import { db, campaigns, coupons, promotion_redemptions, rides } from "@fairmove/shared-db";
 import { eq, and } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 
 export interface PromotionResult {
   discountApplied: boolean;
-  discountAmount: number; // in cents
-  finalPrice: number; // in cents
-  driverCredit: number; // in cents
+  discountAmount: number;
+  finalPrice: number;
+  driverCredit: number;
   redemptionId?: string;
 }
 
-export function applyPromotion(
+export async function applyPromotion(
   rideId: string,
   passengerId: string,
   couponCode?: string
-): PromotionResult {
-  // Default: no promotion
+): Promise<PromotionResult> {
   let discountAmount = 0;
   let redemptionId = "";
 
-  // If coupon code provided, check it
   if (couponCode) {
-    const coupon = db.select().from(coupons).where(
+    const coupon = await db.select().from(coupons).where(
       eq(coupons.code, couponCode)
     );
 
     if (coupon.length > 0 && coupon[0].is_active) {
-      // Check if coupon is not expired
       const now = new Date();
       if (coupon[0].expires_at && new Date(coupon[0].expires_at) < now) {
         return { discountApplied: false, discountAmount: 0, finalPrice: 0, driverCredit: 0 };
       }
 
-      // Check if coupon has remaining uses
       if (coupon[0].is_single_use && coupon[0].times_used >= 1) {
         return { discountApplied: false, discountAmount: 0, finalPrice: 0, driverCredit: 0 };
       }
 
-      if (coupon[0].max_uses >= 0 && coupon[0].uses_count >= coupon[0].max_uses) {
+      if (coupon[0].max_uses != null && coupon[0].uses_count >= coupon[0].max_uses) {
         return { discountApplied: false, discountAmount: 0, finalPrice: 0, driverCredit: 0 };
       }
 
-      // Apply the promotion
-      discountAmount = coupon[0].discount_value;
-      const redemptionId = uuidv4();
+      discountAmount = coupon[0].discount_value || 0;
+      const newRedemptionId = uuidv4();
 
-      // Record the redemption
-      db.insert(promotion_redemptions).values({
-        id: redemptionId,
+      await db.insert(promotion_redemptions).values({
+        id: newRedemptionId,
         rideId,
         couponId: coupon[0].id,
         passengerId,
@@ -56,22 +49,22 @@ export function applyPromotion(
         amount_discounted: discountAmount,
       });
 
-      // Update coupon uses count
-      db.update(coupons).set({
-        uses_count: coupon[0].uses_count + 1,
+      await db.update(coupons).set({
+        times_used: (coupon[0].times_used || 0) + 1,
       }).where(eq(coupons.id, coupon[0].id));
+
+      redemptionId = newRedemptionId;
     }
   }
 
-  // Get the base ride price (without promotion)
-  const ride = db.select().from(rides).where(eq(rides.id, rideId));
+  const ride = await db.select().from(rides).where(eq(rides.id, rideId));
 
   if (ride.length === 0) {
     return { discountApplied: false, discountAmount: 0, finalPrice: 0, driverCredit: 0 };
   }
 
   const basePrice = ride[0].finalPassengerPrice;
-  const driverCredit = basePrice; // Rule: driverCredit = passengerPrice
+  const driverCredit = basePrice;
 
   const finalPrice = basePrice - discountAmount;
 
@@ -84,7 +77,7 @@ export function applyPromotion(
   };
 }
 
-export function createCampaign(
+export async function createCampaign(
   name: string,
   discountType: "percent" | "fixed",
   discountValue: number,
@@ -92,9 +85,9 @@ export function createCampaign(
   maxUses?: number,
   startDate?: Date,
   endDate?: Date
-) {
+): Promise<string> {
   const id = uuidv4();
-  db.insert(campaigns).values({
+  await db.insert(campaigns).values({
     id,
     name,
     discount_type: discountType,
@@ -109,9 +102,9 @@ export function createCampaign(
   return id;
 }
 
-export function generateCouponCode(campaignId: string): string {
+export async function generateCouponCode(campaignId: string): Promise<string> {
   const code = `FAIR${uuidv4().toString().substring(0, 8).toUpperCase()}`;
-  db.insert(coupons).values({
+  await db.insert(coupons).values({
     id: uuidv4(),
     code,
     campaignId,

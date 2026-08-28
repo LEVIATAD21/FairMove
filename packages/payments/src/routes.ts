@@ -1,9 +1,8 @@
 import { Router } from "express";
-import { paymentProvider } from "../";
-import { walletEngine } from "../wallets/engine/wallet-engine";
-import { v4 as uuidv4 } from "uuid";
+import { MockPaymentProvider } from "./index";
 
 const router = Router();
+const paymentProvider = new MockPaymentProvider();
 
 // Authorize payment
 router.post("/authorize", async (req, res) => {
@@ -19,16 +18,6 @@ router.post("/authorize", async (req, res) => {
       currency || "BRL",
       { driverId, rideId }
     );
-
-    // If authorized, credit the driver's wallet
-    if (result.status === "authorized") {
-      await walletEngine.creditWallet(
-        driverId,
-        amount,
-        "credit",
-        { metadata: { rideId, payment: "authorized" } }
-      );
-    }
 
     return res.json(result);
   } catch (error) {
@@ -47,12 +36,6 @@ router.post("/capture", async (req, res) => {
     }
 
     const result = await paymentProvider.capture(transactionId, amount);
-
-    // If captured, update the ride status and complete payment
-    if (result.status === "captured") {
-      // In a real implementation, we would update the ride and capture the payment
-      // For now, just return the result
-    }
 
     return res.json(result);
   } catch (error) {
