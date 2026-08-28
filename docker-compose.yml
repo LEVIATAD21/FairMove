@@ -1,49 +1,140 @@
 version: "3.8"
 
+
+
 services:
+
   postgres:
+  
     image: postgres:15-alpine
+    
     container_name: fairmove-postgres
+    
     restart: always
+    
     environment:
+    
       POSTGRES_DB: fairmove
+      
       POSTGRES_USER: fairmove
-      POSTGRES_PASSWORD: fairmove_password
+      
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      
     volumes:
+    
       - postgres_data:/var/lib/postgresql/data
+      
     ports:
+    
       - "5432:5432"
+      
+
 
   redis:
+  
     image: redis:7-alpine
+    
     container_name: fairmove-redis
+    
     restart: always
+    
     ports:
+    
       - "6379:6379"
+      
     volumes:
+    
       - redis_data:/data
+      
+
 
   backend:
+  
     build: .
+    
     container_name: fairmove-backend
+    
     restart: always
+    
     depends_on:
+    
       - postgres
+      
       - redis
+      
     environment:
-      DATABASE_URL: postgres://fairmove:fairmove_password@postgres:5432/fairmove
+    
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: fairmove_jwt_secret_key_change_in_production
+      
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      
       JWT_EXPIRES_IN: 1d
-      REFRESH_TOKEN_SECRET: fairmove_refresh_token_secret_key_change_in_production
+      
+      REFRESH_TOKEN_SECRET: ${REFRESH_TOKEN_SECRET:?Set REFRESH_TOKEN_SECRET in .env}
+      
       REFRESH_TOKEN_EXPIRES_IN: 30d
+      
       NODE_ENV: development
+      
       PORT: 3000
+      
     ports:
+    
       - "3000:3000"
+      
     volumes:
+    
       - .:/usr/src/app
+      
+
 
 volumes:
+
   postgres_data:
+  
   redis_data:
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
