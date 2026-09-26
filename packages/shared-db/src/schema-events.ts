@@ -83,8 +83,36 @@ export const cinemaRewardClaims = pgTable("cinema_reward_claims", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+/**
+ * Recompensas distribuídas do FairMove League.
+ *
+ * Uma linha por recompensa emitida para um motorista:
+ * - `cash_prize` — valor em centavos creditado em `wallet_balance` (saque livre).
+ * - `discount_coupon` — percentual (`discount_percent`) sobre a FATIA DA
+ *   PLATAFORMA da mensalidade por `duration_months`; nunca toca a reserva.
+ * - `cinema_voucher` — ingresso do Cinema FairMove (value = 0).
+ */
+export const eventRewards = pgTable("event_rewards", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  eventId: text("event_id").notNull().references(() => events.id),
+  driverId: text("driver_id").notNull(),
+  rank: integer("rank").notNull(),
+  rewardType: text("reward_type").notNull(), // cash_prize, discount_coupon, cinema_voucher
+  /** Centavos: valor em dinheiro do prêmio (0 para cupons/vouchers). */
+  rewardValueCents: integer("reward_value_cents").notNull().default(0),
+  /** Percentual do cupom de desconto (0–100), apenas para `discount_coupon`. */
+  discountPercent: integer("discount_percent"),
+  /** Vigência do cupom em meses (apenas `discount_coupon`). */
+  durationMonths: integer("duration_months"),
+  status: text("status").notNull().default("pending"), // pending, credited, expired, cancelled
+  idempotencyKey: text("idempotency_key").unique(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export type Event = typeof events.$inferSelect;
 export type EventParticipant = typeof eventParticipants.$inferSelect;
 export type EventLeaderboard = typeof eventLeaderboard.$inferSelect;
 export type RewardWalletTransaction = typeof rewardWalletTransactions.$inferSelect;
 export type CinemaRewardClaim = typeof cinemaRewardClaims.$inferSelect;
+export type EventReward = typeof eventRewards.$inferSelect;

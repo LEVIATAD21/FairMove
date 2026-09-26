@@ -8,6 +8,11 @@ export const colors = {
   /** Preto Absoluto — camada abaixo da obsidiana (modais, splash). */
   absoluteBlack: "#000000",
 
+  /** Dourado Metálico — CTA, rota, foco, bordas ativas (alias canônico FV). */
+  metallicGold: "#D4AF37",
+  /** Branco Gelo/Campanha — texto principal (alias canônico FV). */
+  champagne: "#F5F5F5",
+
   /** Escala de grafite (aliases legíveis — chaves numéricas não são válidas em dot-access). */
   graphite: {
     deepest: "#0B0B0D" /* 900: superfícies de tab bar/modais */,

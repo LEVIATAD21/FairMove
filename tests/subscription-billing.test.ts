@@ -178,3 +178,108 @@ describe("resolveMonthsActive", () => {
     expect(resolveMonthsActive("2026-01-15T12:00:00", new Date("2026-03-15T13:00:00"))).toBe(3);
   });
 });
+
+describe("calculateMonthlyFee — cupom FairMove League (só fatia da plataforma)", () => {
+  const couponState = () =>
+    fc.record({
+      monthsActive: fc.integer({ min: 2, max: 1_200 }),
+      optedOutOfReserve: fc.boolean(),
+      discountPercent: fc.float({ min: 0, max: 100, noNaN: true }),
+    });
+
+  test("cupom nunca reduz a parcela da reserva", () => {
+    fc.assert(
+      fc.property(couponState(), (state) => {
+        const withoutCoupon = calculateMonthlyFee({ ...state, discountPercent: 0 });
+        const withCoupon = calculateMonthlyFee(state);
+        expect(withCoupon.reserveShare).toBe(withoutCoupon.reserveShare);
+      }),
+      { numRuns: 10_000 }
+    );
+  });
+
+  test("totalFee sempre equivale a platformShare + reserveShare", () => {
+    fc.assert(
+      fc.property(couponState(), (state) => {
+        const fee = calculateMonthlyFee(state);
+        expect(fee.totalFee).toBe(fee.platformShare + fee.reserveShare);
+      }),
+      { numRuns: 10_000 }
+    );
+  });
+
+  test("cupom nunca reduz a parcela da plataforma a valores negativos e respeita o percentual", () => {
+    fc.assert(
+      fc.property(couponState(), (state) => {
+        const base = calculateMonthlyFee({ ...state, discountPercent: 0 });
+        const fee = calculateMonthlyFee(state);
+        const expected = Math.max(0, Math.round(base.platformShare * (1 - state.discountPercent / 100)));
+        expect(fee.platformShare).toBe(expected);
+        expect(fee.platformShare).toBeGreaterThanOrEqual(0);
+        expect(fee.platformShare).toBeLessThanOrEqual(base.platformShare);
+      }),
+      { numRuns: 10_000 }
+    );
+  });
+
+  test("cupom de 100% zera somente a plataforma (reserva intacta)", () => {
+    const fee = calculateMonthlyFee({ monthsActive: 3, optedOutOfReserve: false, discountPercent: 100 });
+    expect(fee.platformShare).toBe(0);
+    expect(fee.reserveShare).toBe(7_000);
+    expect(fee.totalFee).toBe(7_000);
+  });
+
+  test("cupom 50% no mês 2: R$ 25,50 plataforma + R$ 49,00 reserva = R$ 74,50", () => {
+    const fee = calculateMonthlyFee({ monthsActive: 2, optedOutOfReserve: false, discountPercent: 50 });
+    expect(fee.platformShare).toBe(2_550);
+    expect(fee.reserveShare).toBe(4_900);
+    expect(fee.totalFee).toBe(7_450);
+    expect(fee.tier).toBe("standard");
+  });
+
+  test("cupom não altera o trial (mês 1 continua R$ 0)", () => {
+    const fee = calculateMonthlyFee({ monthsActive: 1, optedOutOfReserve: false, discountPercent: 80 });
+    expect(fee.totalFee).toBe(0);
+    expect(fee.tier).toBe("trial");
+  });
+
+  test("percentuais fora da faixa são normalizados", () => {
+    expect(
+      calculateMonthlyFee({ monthsActive: 3, optedOutOfReserve: false, discountPercent: -20 }).platformShare
+    ).toBe(13_000);
+    expect(
+      calculateMonthlyFee({ monthsActive: 3, optedOutOfReserve: false, discountPercent: 250 }).platformShare
+    ).toBe(0);
+    expect(
+      calculateMonthlyFee({ monthsActive: 3, optedOutOfReserve: false, discountPercent: Number.NaN })
+        .platformShare
+    ).toBe(13_000);
+  });
+});
+
+describe("matriz progressiva completa (mês × opt-out × cupom)", () => {
+  test("cobertura exata da tabela oficial de 1 a 12 meses", () => {
+    const expected: Record<string, [number, number, number]> = {
+      // [totalFee, platformShare, reserveShare]
+      "1:false": [0, 0, 0],
+      "1:true": [0, 0, 0],
+      "2:false": [10_000, 5_100, 4_900],
+      "2:true": [15_000, 15_000, 0],
+    };
+    for (let m = 3; m <= 12; m++) {
+      expected[`${m}:false`] = [20_000, 13_000, 7_000];
+      expected[`${m}:true`] = [15_000, 15_000, 0];
+    }
+
+    for (const [key, [total, platform, reserve]] of Object.entries(expected)) {
+      const [months, optedOut] = key.split(":");
+      const fee = calculateMonthlyFee({
+        monthsActive: Number(months),
+        optedOutOfReserve: optedOut === "true",
+      });
+      expect([fee.totalFee, fee.platformShare, fee.reserveShare]).toEqual([total, platform, reserve]);
+      expect(total).toBe(platform + reserve);
+      expect(Number.isInteger(total)).toBe(true);
+    }
+  });
+});

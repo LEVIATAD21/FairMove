@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Animated, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
-import { AppText, Monogram, SLOGAN, BRAND, colors, spacing } from "@fairmove/ui";
+import { AppText, FVLogo, SLOGAN, BRAND, colors, spacing } from "@fairmove/ui";
 
 /**
  * Splash cinematográfica: monograma FV pulsando em glow dourado + slogan.
@@ -31,7 +31,7 @@ export default function Splash() {
   return (
     <View style={styles.container}>
       <Animated.View style={[styles.mark, { opacity: pulse }]}>
-        <Monogram size={96} />
+        <FVLogo size={96} />
       </Animated.View>
 
       <AppText variant="display" style={styles.brand}>

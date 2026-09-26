@@ -35,6 +35,7 @@ export {
   eventLeaderboard,
   rewardWalletTransactions,
   cinemaRewardClaims,
+  eventRewards,
   eventStatusEnum,
   rewardTierEnum,
 } from "./schema-events";
@@ -45,4 +46,5 @@ export type {
   EventLeaderboard,
   RewardWalletTransaction,
   CinemaRewardClaim,
+  EventReward,
 } from "./schema-events";

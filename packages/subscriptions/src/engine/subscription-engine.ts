@@ -1,5 +1,5 @@
-import { db, subscriptions, type Transaction } from "@fairmove/shared-db";
-import { eq } from "drizzle-orm";
+import { db, subscriptions, drivers, eventRewards, type Transaction } from "@fairmove/shared-db";
+import { eq, and } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import {
   walletEngine,
@@ -7,6 +7,7 @@ import {
   InsufficientFundsError,
 } from "../../../wallets/src/engine/wallet-engine";
 import { reserveEngine } from "../../../reserves/src/engine/reserve-engine";
+import { calculateMonthlyFee, resolveMonthsActive } from "./billing-calculator";
 
 export interface SubscriptionResult {
   success: boolean;
@@ -14,14 +15,11 @@ export interface SubscriptionResult {
   message: string;
   status?: string;
   newReserveBalance?: number;
+  /** Faixa de cobrança aplicada (trial/standard/full/optOut) — útil para logs e UI. */
+  tier?: string;
+  /** Mensalidade cobrada no ciclo (centavos). */
+  amountChargedCents?: number;
 }
-
-/** Preço da assinatura após o 1º mês: R$ 100,00. */
-export const SUBSCRIPTION_PRICE_CENTS = 10_000;
-/** Repartição: R$ 59,00 para a plataforma. */
-export const PLATFORM_SHARE_CENTS = 5_900;
-/** Repartição: R$ 41,00 para a reserva de emergência do motorista. */
-export const RESERVE_SHARE_CENTS = 4_100;
 
 export function getPlatformUserId(): string {
   return process.env.PLATFORM_USER_ID || "platform";
@@ -67,6 +65,8 @@ export class SubscriptionEngine {
           currentPeriodEnd,
           cancelAt: false,
           canceledAt: null,
+          subscriptionStartedAt: existing.subscriptionStartedAt ?? now,
+          currentBillingCycle: 1,
           updatedAt: new Date(),
         })
         .where(eq(subscriptions.userId, userId));
@@ -80,6 +80,8 @@ export class SubscriptionEngine {
         trialEndsAt,
         currentPeriodStart: now,
         currentPeriodEnd,
+        subscriptionStartedAt: now,
+        currentBillingCycle: 1,
       });
     }
 
@@ -88,7 +90,7 @@ export class SubscriptionEngine {
       subscriptionId,
       status: "active",
       message:
-        "Assinatura ativada. Primeiro mês grátis. A partir do 2º mês: R$ 100/mês (R$ 59 para plataforma + R$ 41 para reserva).",
+        "Assinatura ativada. Mês 1 grátis. Mês 2: R$ 100,00 (R$ 51,00 plataforma + R$ 49,00 reserva). Mês 3+: R$ 200,00 (R$ 130,00 + R$ 70,00).",
     };
   }
 
@@ -153,9 +155,44 @@ export class SubscriptionEngine {
   }
 
   /**
-   * Cobra a mensalidade (R$ 100):
-   * - R$ 59 → carteira da plataforma
-   * - R$ 41 → reserva de emergência do motorista
+   * Resolve o maior cupom de desconto ativo do motorista (FairMove League).
+   * Cupons vencem após `durationMonths` a partir da emissão. Retorna 0 quando
+   * não há cupom vigente.
+   */
+  private async resolveActiveDiscountPercent(userId: string, now: Date): Promise<number> {
+    const driverRows = await db
+      .select({ id: drivers.id })
+      .from(drivers)
+      .where(eq(drivers.userId, userId))
+      .limit(1);
+    if (driverRows.length === 0) return 0;
+
+    const coupons = await db
+      .select()
+      .from(eventRewards)
+      .where(
+        and(eq(eventRewards.driverId, driverRows[0].id), eq(eventRewards.rewardType, "discount_coupon"))
+      );
+
+    let best = 0;
+    for (const coupon of coupons) {
+      const issuedAt = new Date(coupon.createdAt);
+      const expiresAt = new Date(issuedAt);
+      expiresAt.setMonth(expiresAt.getMonth() + (coupon.durationMonths ?? 1));
+      if (now >= issuedAt && now < expiresAt) {
+        best = Math.max(best, coupon.discountPercent ?? 0);
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Cobra a mensalidade progressiva:
+   * - Mês 1: R$ 0,00 (trial) — apenas estende o período.
+   * - Mês 2: R$ 100,00 (R$ 51,00 plataforma + R$ 49,00 reserva).
+   * - Mês 3+: R$ 200,00 (R$ 130,00 plataforma + R$ 70,00 reserva).
+   * - Opt-out da reserva: R$ 150,00 fixos, 100% plataforma.
+   * - Cupons FairMove League descontam SOMENTE da fatia da plataforma.
    *
    * Idempotente por período de cobrança; se o saldo do motorista não cobre a
    * mensalidade, a assinatura vai para `past_due` e nada é cobrado.
@@ -176,73 +213,114 @@ export class SubscriptionEngine {
     }
 
     const chargeDate = new Date();
+    const now = new Date();
+    const monthsActive =
+      resolveMonthsActive(sub.subscriptionStartedAt, now) || sub.currentBillingCycle || 1;
+    const discountPercent = await this.resolveActiveDiscountPercent(userId, chargeDate);
+    const fee = calculateMonthlyFee({
+      monthsActive,
+      optedOutOfReserve: sub.optedOutOfReserve,
+      discountPercent,
+    });
+
+    // Mês 1 (trial) — nada a cobrar: apenas estende o período coberto.
+    if (fee.totalFee === 0) {
+      await db
+        .update(subscriptions)
+        .set({
+          currentPeriodStart: chargeDate,
+          currentPeriodEnd: new Date(chargeDate.getTime() + 30 * 24 * 60 * 60 * 1000),
+          currentBillingCycle: monthsActive,
+          updatedAt: new Date(),
+        })
+        .where(eq(subscriptions.id, sub.id));
+      return {
+        success: true,
+        subscriptionId: sub.id,
+        status: "active",
+        tier: fee.tier,
+        amountChargedCents: 0,
+        message: "Mês 1 (trial): mensalidade de R$ 0,00. Período estendido.",
+      };
+    }
+
     const idempotencyKey = `subscription:${userId}:${periodKey(chargeDate)}`;
     const platformUserId = getPlatformUserId();
 
     try {
       const result = await db.transaction(async (tx: Transaction) => {
-        // Débita R$ 100 da carteira do motorista
+        let reserveBalance: number | undefined;
+
+        // Débita a taxa total progressiva da carteira do motorista
         await walletEngine.debitCents(
           userId,
-          SUBSCRIPTION_PRICE_CENTS,
+          fee.totalFee,
           {
             idempotencyKey: `${idempotencyKey}:debit`,
-            description: "Mensalidade da assinatura FairMove",
-            metadata: { subscriptionId: sub.id },
+            description: `Mensalidade FairMove — mês ${monthsActive} (${fee.tier})`,
+            metadata: { subscriptionId: sub.id, monthsActive, tier: fee.tier, discountPercent },
           },
           tx
         );
 
-        // R$ 59 → plataforma
-        await walletEngine.creditCents(
-          platformUserId,
-          PLATFORM_SHARE_CENTS,
-          {
-            idempotencyKey: `${idempotencyKey}:platform`,
-            description: "Receita de assinatura (plataforma)",
-            metadata: { subscriptionId: sub.id, userId },
-          },
-          tx
-        );
+        // Parcela da plataforma (já líquida de cupom, quando houver)
+        if (fee.platformShare > 0) {
+          await walletEngine.creditCents(
+            platformUserId,
+            fee.platformShare,
+            {
+              idempotencyKey: `${idempotencyKey}:platform`,
+              description: "Receita de assinatura (plataforma)",
+              metadata: { subscriptionId: sub.id, userId, tier: fee.tier },
+            },
+            tx
+          );
+        }
 
-        // R$ 41 → reserva do motorista (espelho na carteira)
-        const reserveMove = await walletEngine.creditReserveCents(
-          userId,
-          RESERVE_SHARE_CENTS,
-          {
-            idempotencyKey: `${idempotencyKey}:reserve`,
-            description: "Aporte da assinatura na reserva de emergência",
-            metadata: { subscriptionId: sub.id },
-          },
-          tx
-        );
+        // Parcela da reserva — NUNCA reduzida por cupom; só existe sem opt-out
+        if (fee.reserveShare > 0) {
+          const reserveMove = await walletEngine.creditReserveCents(
+            userId,
+            fee.reserveShare,
+            {
+              idempotencyKey: `${idempotencyKey}:reserve`,
+              description: "Aporte da assinatura na reserva de emergência",
+              metadata: { subscriptionId: sub.id },
+            },
+            tx
+          );
 
-        // …e nos buckets da reserva
-        await reserveEngine.contributeToReserve(userId, RESERVE_SHARE_CENTS / 100, "emergency", tx);
-        await reserveEngine.recordContribution(userId, RESERVE_SHARE_CENTS / 100, "emergency", tx, {
-          ledgerTransactionId: reserveMove.transactionId,
-        });
+          // …e nos buckets da reserva
+          await reserveEngine.contributeToReserve(userId, fee.reserveShare / 100, "emergency", tx);
+          await reserveEngine.recordContribution(userId, fee.reserveShare / 100, "emergency", tx, {
+            ledgerTransactionId: reserveMove.transactionId,
+          });
 
-        // Estende o período coberto
+          reserveBalance = reserveMove.newReserveBalance;
+        }
+
+        // Estende o período coberto e registra o ciclo faturado
         await tx
           .update(subscriptions)
           .set({
             currentPeriodStart: chargeDate,
             currentPeriodEnd: new Date(chargeDate.getTime() + 30 * 24 * 60 * 60 * 1000),
+            currentBillingCycle: monthsActive,
             updatedAt: new Date(),
           })
           .where(eq(subscriptions.id, sub.id));
 
-        return reserveMove;
+        return { newReserveBalance: reserveBalance };
       });
 
       return {
         success: true,
         subscriptionId: sub.id,
         status: "active",
+        tier: fee.tier,
+        amountChargedCents: fee.totalFee,
         newReserveBalance: result.newReserveBalance,
-        message:
-          "Mensalidade cobrada. R$ 59 para a plataforma e R$ 41 adicionados à reserva de emergência.",
+        message: `Mensalidade cobrada (mês ${monthsActive}): R$ ${(fee.totalFee / 100).toFixed(2)} — R$ ${(fee.platformShare / 100).toFixed(2)} plataforma, R$ ${(fee.reserveShare / 100).toFixed(2)} reserva.`,
       };
     } catch (error) {
       if (error instanceof DuplicateOperationError) {
@@ -250,6 +328,7 @@ export class SubscriptionEngine {
           success: true,
           subscriptionId: sub.id,
           status: "active",
+          tier: fee.tier,
           message: "Mensalidade já cobrada neste período.",
         };
       }

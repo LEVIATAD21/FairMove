@@ -1,9 +1,10 @@
 import { Router, type Request, type Response } from "express";
-import { db, events, eventParticipants, eventLeaderboard, rewardWalletTransactions, cinemaRewardClaims, drivers } from "@fairmove/shared-db";
-import { eq, and, desc, gte, lte, sql, count } from "drizzle-orm";
+import { db, events, eventParticipants, eventLeaderboard, rewardWalletTransactions, cinemaRewardClaims, eventRewards, drivers } from "@fairmove/shared-db";
+import { eq, and, desc, gte, lte, sql, count, asc } from "drizzle-orm";
 import { requireAuth, requireSelfOrRole, requireRole, type AuthUser } from "../../auth/src/middleware";
 import { v4 as uuidv4 } from "uuid";
 import { calculateDriverMetrics, recalculateLeaderboard, getRewardBreakdown, getLeaderboard } from "./engine/scoring-engine";
+import { calculateEventRewards } from "./engine/rewards-engine";
 
 const router = Router();
 
@@ -277,6 +278,38 @@ router.post("/admin/events/:eventId/recalculate", requireAuth, requireRole("admi
     return res.json({ message: "Leaderboard recalculado" });
   } catch (error) {
     console.error("Admin recalculate error:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/admin/events/:eventId/distribute-rewards", requireAuth, requireRole("admin"), async (req: Request, res: Response) => {
+  try {
+    const eventId = Array.isArray(req.params.eventId) ? req.params.eventId[0] : req.params.eventId;
+    const rewards = await calculateEventRewards(eventId);
+    return res.json({
+      message: `${rewards.length} recompensas emitidas`,
+      rewards,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Internal server error";
+    console.error("Admin distribute rewards error:", error);
+    if (message === "Evento não encontrado") return res.status(404).json({ error: message });
+    if (message.includes("Leaderboard não calculado")) return res.status(409).json({ error: message });
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/events/:eventId/rewards", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const eventId = Array.isArray(req.params.eventId) ? req.params.eventId[0] : req.params.eventId;
+    const rewards = await db
+      .select()
+      .from(eventRewards)
+      .where(eq(eventRewards.eventId, eventId))
+      .orderBy(asc(eventRewards.rank));
+    return res.json(rewards);
+  } catch (error) {
+    console.error("Get event rewards error:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 });

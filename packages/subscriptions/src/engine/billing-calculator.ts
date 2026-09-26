@@ -45,6 +45,12 @@ export interface SubscriptionBillingState {
   monthsActive: number;
   /** `true` quando o motorista saiu da Reserva de Disciplina e Emergência. */
   optedOutOfReserve: boolean;
+  /**
+   * Percentual de desconto ativo de cupom FairMove League (0–100).
+   * Aplica-se EXCLUSIVAMENTE à fatia da plataforma — a parcela da Reserva de
+   * Disciplina e Emergência nunca é reduzida por cupons.
+   */
+  discountPercent?: number;
 }
 
 export interface MonthlyFeeBreakdown {
@@ -88,7 +94,22 @@ export function calculateMonthlyFee(state: SubscriptionBillingState): MonthlyFee
   else tier = "full";
 
   const fee = SUBSCRIPTION_FEES[tier];
-  return { ...fee, tier };
+
+  // Cupom FairMove League: desconto aplicado SOMENTE à fatia da plataforma.
+  // A reserva (reserveShare) intocável; totalFee é recalculado como soma real.
+  const discount = normalizeDiscount(state?.discountPercent);
+  if (discount === 0) {
+    return { ...fee, tier };
+  }
+  const platformShare = Math.max(0, Math.round(fee.platformShare * (1 - discount / 100)));
+  const reserveShare = fee.reserveShare;
+  return { totalFee: platformShare + reserveShare, platformShare, reserveShare, tier };
+}
+
+/** Normaliza o percentual de cupom para o intervalo fechado [0, 100]. */
+function normalizeDiscount(discountPercent: number | undefined): number {
+  if (discountPercent === undefined || !Number.isFinite(discountPercent)) return 0;
+  return Math.min(100, Math.max(0, discountPercent));
 }
 
 /**
