@@ -28,5 +28,21 @@ export type { FraudEvent, RiskScore } from "./schema-fraud";
 export { safety_events, trust_contacts, trip_codes, incidents } from "./schema-safety";
 export type { SafetyEvent, TrustContact, TripCode, Incident } from "./schema-safety";
 
-export { subscriptions } from "./schema-subscriptions";
-export type { Subscription } from "./schema-subscriptions";
+export { subscriptions, billingLedgerDestinations } from "./schema-subscriptions";
+export {
+  events,
+  eventParticipants,
+  eventLeaderboard,
+  rewardWalletTransactions,
+  cinemaRewardClaims,
+  eventStatusEnum,
+  rewardTierEnum,
+} from "./schema-events";
+export type { Subscription, BillingLedgerDestination } from "./schema-subscriptions";
+export type {
+  Event,
+  EventParticipant,
+  EventLeaderboard,
+  RewardWalletTransaction,
+  CinemaRewardClaim,
+} from "./schema-events";

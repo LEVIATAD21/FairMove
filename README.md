@@ -10,12 +10,14 @@ FairMove is a modular monolith built with TypeScript, Node.js, and PostgreSQL. T
 
 ```
 FairMove/
-  apps/                 # Passenger application (React Native/Expo)
+  apps/
+    passenger/          # Passenger app (Expo + Expo Router)
+    driver/             # Driver app (Expo + Expo Router)
   backend/              # Node.js Express entrypoint (backend/src/index.ts)
   packages/
     auth/               # Authentication (JWT, password hashing, sessions)
     config/             # Configuration utilities
-    design-system/      # Shared design system components
+    ui/                 # "FV Cinematic" design system (tema + componentes)
     fraud/              # Fraud detection engine
     matching/           # Driver matching / nearby search
     payments/           # Payment provider interface + Mock + settlement

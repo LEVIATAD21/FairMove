@@ -1,26 +1,26 @@
 {
   "expo": {
-    "name": "FairMove Passageiro",
-    "slug": "fairmove-passenger",
+    "name": "FairMove Motorista",
+    "slug": "fairmove-driver",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "scheme": "fairmove",
+    "scheme": "fairmove-driver",
     "splash": {
       "backgroundColor": "#050505",
       "resizeMode": "contain"
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.fairmove.passenger"
+      "bundleIdentifier": "com.fairmove.driver"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#050505",
         "foregroundImage": "./assets/icon.png"
       },
-      "package": "com.fairmove.passenger"
+      "package": "com.fairmove.driver"
     },
     "web": {
       "favicon": "./assets/icon.png",
@@ -30,7 +30,7 @@
       "expo-router"
     ],
     "extra": {
-      "port": 8099
+      "port": 8100
     }
   }
 }

@@ -2,7 +2,9 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "commonjs",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -16,13 +18,31 @@
     "moduleResolution": "node",
     "baseUrl": ".",
     "paths": {
-      "@fairmove/shared-db": ["packages/shared-db/src/index"],
-      "@fairmove/shared-types": ["packages/shared-types/src/index"],
-      "@fairmove/design-system": ["packages/design-system/src/index"],
-      "@fairmove/validation": ["packages/validation/src/index"],
-      "@fairmove/config": ["packages/config/src/index"]
-    }
+      "@fairmove/shared-db": [
+        "packages/shared-db/src/index"
+      ],
+      "@fairmove/shared-types": [
+        "packages/shared-types/src/index"
+      ],
+      "@fairmove/validation": [
+        "packages/validation/src/index"
+      ],
+      "@fairmove/config": [
+        "packages/config/src/index"
+      ],
+      "@fairmove/ui": [
+        "packages/ui/src/index"
+      ]
+    },
+    "jsx": "react-jsx"
   },
-  "include": ["packages/**/src", "backend/src"],
-  "exclude": ["node_modules", "dist", "**/*.d.ts"]
+  "include": [
+    "packages/**/src",
+    "backend/src"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.d.ts"
+  ]
 }

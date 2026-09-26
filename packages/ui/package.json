@@ -1,0 +1,19 @@
+{
+  "name": "@fairmove/ui",
+  "version": "1.0.0",
+  "description": "FairMove design system \u2014 tema 'FV Cinematic' e componentes compartilhados",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "peerDependencies": {
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0"
+  },
+  "private": true
+}

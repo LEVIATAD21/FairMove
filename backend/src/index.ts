@@ -16,6 +16,8 @@ import { reserveRouter } from "../../packages/reserves/src/routes";
 import { safetyRouter } from "../../packages/safety/src/routes";
 import { fraudRouter } from "../../packages/fraud/src/routes";
 import { subscriptionRouter } from "../../packages/subscriptions/src/routes";
+import { eventsRouter } from "../../packages/events/src/routes";
+import { eventScheduler } from "../../packages/events/src/scheduler";
 
 /** Fail-fast: variáveis obrigatórias precisam existir antes de subir o servidor. */
 function assertRequiredEnv(): void {
@@ -82,6 +84,7 @@ app.use("/api/reserves", reserveRouter);
 app.use("/api/safety", safetyRouter);
 app.use("/api/fraud", fraudRouter);
 app.use("/api/subscriptions", subscriptionRouter);
+app.use("/api/events", eventsRouter);
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
@@ -103,15 +106,22 @@ app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
 });
 
 const server = app.listen(port, () => {
+  eventScheduler.start();
   console.log(`FairMove backend running on port ${port}`);
 });
 
 function shutdown(signal: string): void {
+  eventScheduler.stop();
   console.log(`${signal} received, shutting down gracefully...`);
   server.close(() => {
     process.exit(0);
   });
-  setTimeout(() => process.exit(1), 10_000).unref();
+  // Cast defensivo: os globals de tipos do React Native (monorepo) fazem
+  // `setTimeout` inferir `number` — em runtime Node o retorno é um Timeout.
+  const forceExit = setTimeout(() => process.exit(1), 10_000) as unknown as {
+    unref?: () => void;
+  };
+  forceExit.unref?.();
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));

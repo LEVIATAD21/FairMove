@@ -8,6 +8,20 @@
       "when": 1790427253858,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790446657495,
+      "tag": "0001_subscription_billing_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790455200186,
+      "tag": "0002_fairmove_league",
+      "breakpoints": true
     }
   ]
 }
