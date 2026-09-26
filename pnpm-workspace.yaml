@@ -2,5 +2,14 @@ packages:
   - packages/*
   - apps/*
 allowBuilds:
-  bcrypt: set this to true or false
-  unrs-resolver: set this to true or false
+  bcrypt: true
+  esbuild: true
+  unrs-resolver: true
+minimumReleaseAgeExclude:
+  - '@expo/cli@57.0.20'
+  - '@expo/env@2.4.3'
+  - '@expo/fingerprint@0.20.11'
+  - '@expo/metro-config@57.0.12'
+  - expo-constants@57.0.16
+  - expo-font@57.0.2
+  - expo@57.0.18

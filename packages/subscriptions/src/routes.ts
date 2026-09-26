@@ -1,10 +1,11 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
+import { requireAuth, requireSelfOrRole } from "../../auth/src/middleware";
 import { subscriptionEngine } from "./engine/subscription-engine";
 
 const router = Router();
 
-// Get user subscription
-router.get("/:userId", async (req, res) => {
+/** Rota própria (ou admin) — `:userId` precisa ser o usuário autenticado. */
+router.get("/:userId", requireAuth, requireSelfOrRole("userId", "admin"), async (req: Request, res: Response) => {
   try {
     const { userId } = req.params as { userId: string };
 
@@ -24,8 +25,8 @@ router.get("/:userId", async (req, res) => {
   }
 });
 
-// Activate subscription (trial)
-router.post("/:userId/activate", async (req, res) => {
+// Ativar assinatura (trial) — próprio usuário
+router.post("/:userId/activate", requireAuth, requireSelfOrRole("userId", "admin"), async (req: Request, res: Response) => {
   try {
     const { userId } = req.params as { userId: string };
 
@@ -38,8 +39,8 @@ router.post("/:userId/activate", async (req, res) => {
   }
 });
 
-// Cancel subscription
-router.post("/:userId/cancel", async (req, res) => {
+// Cancelar assinatura — próprio usuário
+router.post("/:userId/cancel", requireAuth, requireSelfOrRole("userId", "admin"), async (req: Request, res: Response) => {
   try {
     const { userId } = req.params as { userId: string };
 
@@ -52,8 +53,8 @@ router.post("/:userId/cancel", async (req, res) => {
   }
 });
 
-// Check trial expiration
-router.post("/:userId/trial-status", async (req, res) => {
+// Verificar expiração do trial — próprio usuário
+router.post("/:userId/trial-status", requireAuth, requireSelfOrRole("userId", "admin"), async (req: Request, res: Response) => {
   try {
     const { userId } = req.params as { userId: string };
 
@@ -66,8 +67,8 @@ router.post("/:userId/trial-status", async (req, res) => {
   }
 });
 
-// Charge monthly fee
-router.post("/:userId/charge", async (req, res) => {
+// Cobrança mensal — disparada apenas por administrador/sistema
+router.post("/:userId/charge", requireAuth, requireSelfOrRole("userId", "admin"), async (req: Request, res: Response) => {
   try {
     const { userId } = req.params as { userId: string };
 

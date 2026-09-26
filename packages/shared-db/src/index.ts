@@ -1,4 +1,5 @@
-export { db } from "./db";
+export { db, getDb } from "./db";
+export type { Database, Transaction, Executor } from "./db";
 
 export { users, sessions, verificationTokens, onboardingCompletion } from "./schema-auth";
 export type { User, Session, VerificationToken, OnboardingCompletion } from "./schema-auth";

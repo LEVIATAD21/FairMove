@@ -1,5 +1,5 @@
 import "dotenv/config";
-import express, { Express, Request, Response } from "express";
+import express, { Express, NextFunction, Request, Response } from "express";
 import helmet from "helmet";
 import cors from "cors";
 import morgan from "morgan";
@@ -17,8 +17,29 @@ import { safetyRouter } from "../../packages/safety/src/routes";
 import { fraudRouter } from "../../packages/fraud/src/routes";
 import { subscriptionRouter } from "../../packages/subscriptions/src/routes";
 
+/** Fail-fast: variáveis obrigatórias precisam existir antes de subir o servidor. */
+function assertRequiredEnv(): void {
+  const required = ["DATABASE_URL", "JWT_SECRET"];
+  const missing = required.filter((key) => !process.env[key]);
+  if (missing.length > 0) {
+    throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
+  }
+  if (!process.env.REFRESH_TOKEN_SECRET) {
+    console.warn("[config] REFRESH_TOKEN_SECRET ausente — usando JWT_SECRET para refresh tokens.");
+  }
+  if (process.env.NODE_ENV === "production" && (process.env.JWT_SECRET ?? "").length < 32) {
+    throw new Error("JWT_SECRET must be at least 32 characters in production.");
+  }
+}
+
+assertRequiredEnv();
+
 const app: Express = express();
 const port: number = Number(process.env.PORT) || 4000;
+
+// Necessário para express-rate-limit identificar o IP real atrás de proxy reverso.
+app.set("trust proxy", 1);
+app.disable("x-powered-by");
 
 app.use(helmet());
 app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:3000" }));
@@ -27,9 +48,20 @@ app.use(morgan("combined"));
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: { error: "Too many requests from this IP, please try again later." },
 });
 app.use("/api/", limiter);
+
+// Rate limit agressivo em autenticação (login/reset/refresh são vetores de abuso).
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many authentication attempts, please try again later." },
+});
 
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: false }));
@@ -38,7 +70,7 @@ app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", service: "fairmove-backend" });
 });
 
-app.use("/api/auth", authRouter);
+app.use("/api/auth", authLimiter, authRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/rides", rideRouter);
 app.use("/api/matching", matchingRouter);
@@ -55,13 +87,34 @@ app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
 });
 
-app.use((err: any, _req: Request, res: Response, _next: any) => {
-  console.error(err.stack);
+// JSON malformado vira 400 em vez de 500 genérico.
+app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+  if (err instanceof SyntaxError && "body" in err) {
+    res.status(400).json({ error: "Malformed JSON body" });
+    return;
+  }
+  const message = err instanceof Error ? err.message : "Internal server error";
+  console.error("Unhandled error:", message);
   res.status(500).json({ error: "Internal server error" });
 });
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`FairMove backend running on port ${port}`);
 });
+
+function shutdown(signal: string): void {
+  console.log(`${signal} received, shutting down gracefully...`);
+  server.close(() => {
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 export { app };

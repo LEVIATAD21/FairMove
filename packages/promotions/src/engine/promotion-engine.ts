@@ -1,78 +1,279 @@
 import { db, campaigns, coupons, promotion_redemptions, rides } from "@fairmove/shared-db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
+
+export interface CouponCampaign {
+  id: string;
+  discount_type: string;
+  discount_value: number;
+  is_active: boolean;
+  max_uses: number | null;
+  uses_count: number;
+  start_date: Date | null;
+  end_date: Date | null;
+}
+
+export interface CouponRow {
+  id: string;
+  code: string;
+  campaignId: string | null;
+  discount_value: number;
+  is_single_use: boolean;
+  is_active: boolean;
+  max_uses: number | null;
+  uses_count: number;
+  expires_at: Date | null;
+}
+
+export interface CouponEvaluation {
+  valid: boolean;
+  reason?: string;
+  discountCents: number;
+  coupon?: CouponRow;
+  campaign?: CouponCampaign | null;
+}
 
 export interface PromotionResult {
   discountApplied: boolean;
-  discountAmount: number;
-  finalPrice: number;
-  driverCredit: number;
+  /** Desconto em centavos. */
+  discountCents: number;
+  /** Preço final em centavos. */
+  finalPriceCents: number;
+  /** Crédito do motorista em centavos (regra: === preço final). */
+  driverCreditCents: number;
   redemptionId?: string;
 }
 
+/**
+ * Calcula o desconto em centavos a partir do cupom e da campanha.
+ * - percent: `discount_value` é a porcentagem (ex.: 10 = 10%)
+ * - fixed: `discount_value` já está em centavos
+ * O desconto é limitado ao preço da corrida.
+ */
+export function computeDiscountCents(
+  campaign: CouponCampaign | null | undefined,
+  couponValueCents: number,
+  priceCents: number
+): number {
+  if (!Number.isFinite(priceCents) || priceCents <= 0) return 0;
+
+  let discount = 0;
+  if (campaign && campaign.discount_type === "percent") {
+    const percent = Math.min(Math.max(campaign.discount_value, 0), 100);
+    discount = Math.round((priceCents * percent) / 100);
+  } else if (campaign) {
+    discount = campaign.discount_value;
+  } else {
+    discount = couponValueCents;
+  }
+
+  if (!Number.isFinite(discount) || discount < 0) discount = 0;
+  return Math.min(discount, priceCents);
+}
+
+function isCampaignWindowOpen(campaign: CouponCampaign | null | undefined, now = new Date()): boolean {
+  if (!campaign) return true;
+  if (!campaign.is_active) return false;
+  if (campaign.start_date && new Date(campaign.start_date) > now) return false;
+  if (campaign.end_date && new Date(campaign.end_date) < now) return false;
+  if (campaign.max_uses != null && campaign.uses_count >= campaign.max_uses) return false;
+  return true;
+}
+
+/** Valida um cupom contra o preço informado, sem escrever nada no banco. */
+export async function evaluateCoupon(
+  couponCode: string,
+  passengerId: string,
+  priceCents: number
+): Promise<CouponEvaluation> {
+  const code = couponCode.trim().toUpperCase();
+
+  const rows = await db
+    .select({ coupon: coupons, campaign: campaigns })
+    .from(coupons)
+    .leftJoin(campaigns, eq(coupons.campaignId, campaigns.id))
+    .where(eq(coupons.code, code));
+
+  if (rows.length === 0) {
+    return { valid: false, reason: "Cupom não encontrado", discountCents: 0 };
+  }
+
+  const coupon = rows[0].coupon;
+  const campaign = rows[0].campaign;
+  const now = new Date();
+
+  if (!coupon.is_active) {
+    return { valid: false, reason: "Cupom inativo", discountCents: 0, coupon, campaign };
+  }
+
+  if (coupon.expires_at && new Date(coupon.expires_at) < now) {
+    return { valid: false, reason: "Cupom expirado", discountCents: 0, coupon, campaign };
+  }
+
+  if (!isCampaignWindowOpen(campaign, now)) {
+    return { valid: false, reason: "Campanha inválida ou encerrada", discountCents: 0, coupon, campaign };
+  }
+
+  if (coupon.max_uses != null && coupon.uses_count >= coupon.max_uses) {
+    return { valid: false, reason: "Cupom esgotado", discountCents: 0, coupon, campaign };
+  }
+
+  if (coupon.is_single_use) {
+    const used = await db
+      .select({ id: promotion_redemptions.id })
+      .from(promotion_redemptions)
+      .where(
+        and(
+          eq(promotion_redemptions.couponId, coupon.id),
+          eq(promotion_redemptions.passengerId, passengerId)
+        )
+      )
+      .limit(1);
+
+    if (used.length > 0) {
+      return {
+        valid: false,
+        reason: "Cupom já utilizado por este passageiro",
+        discountCents: 0,
+        coupon,
+        campaign,
+      };
+    }
+  }
+
+  const discountCents = computeDiscountCents(campaign, coupon.discount_value, priceCents);
+  if (discountCents <= 0) {
+    return { valid: false, reason: "Cupom sem desconto aplicável", discountCents: 0, coupon, campaign };
+  }
+
+  return { valid: true, discountCents, coupon, campaign };
+}
+
+/**
+ * Consome o cupom de forma atômica (incremento condicional) e registra o
+ * resgate. Retorna null quando o limite de uso foi atingido por concorrência.
+ */
+async function redeemCoupon(
+  evaluation: CouponEvaluation,
+  rideId: string,
+  passengerId: string
+): Promise<string | null> {
+  const coupon = evaluation.coupon!;
+  const updated = await db
+    .update(coupons)
+    .set({
+      uses_count: sql`${coupons.uses_count} + 1`,
+      times_used: sql`${coupons.times_used} + 1`,
+    })
+    .where(
+      and(eq(coupons.id, coupon.id), sql`(${coupons.max_uses} IS NULL OR ${coupons.uses_count} < ${coupons.max_uses})`)
+    )
+    .returning({ id: coupons.id });
+
+  if (updated.length === 0) return null;
+
+  if (evaluation.campaign) {
+    await db
+      .update(campaigns)
+      .set({
+        uses_count: sql`${campaigns.uses_count} + 1`,
+        updated_at: new Date(),
+      })
+      .where(eq(campaigns.id, evaluation.campaign.id));
+  }
+
+  const redemptionId = uuidv4();
+  await db.insert(promotion_redemptions).values({
+    id: redemptionId,
+    rideId,
+    couponId: coupon.id,
+    passengerId,
+    redemption_code: coupon.code,
+    amount_discounted: evaluation.discountCents,
+  });
+
+  return redemptionId;
+}
+
+const APPLICABLE_STATUSES = ["REQUESTED", "SEARCHING", "DRIVER_ASSIGNED"];
+
+/**
+ * Aplica um cupom a uma corrida e persiste o novo preço.
+ * Idempotente por corrida: reaplicar o mesmo cupom não cobra em dobro.
+ */
 export async function applyPromotion(
   rideId: string,
   passengerId: string,
   couponCode?: string
 ): Promise<PromotionResult> {
-  let discountAmount = 0;
-  let redemptionId = "";
+  const rideRows = await db.select().from(rides).where(eq(rides.id, rideId));
+  if (rideRows.length === 0) {
+    throw Object.assign(new Error("Ride not found"), { statusCode: 404 });
+  }
+  const ride = rideRows[0];
 
-  if (couponCode) {
-    const coupon = await db.select().from(coupons).where(
-      eq(coupons.code, couponCode)
-    );
-
-    if (coupon.length > 0 && coupon[0].is_active) {
-      const now = new Date();
-      if (coupon[0].expires_at && new Date(coupon[0].expires_at) < now) {
-        return { discountApplied: false, discountAmount: 0, finalPrice: 0, driverCredit: 0 };
-      }
-
-      if (coupon[0].is_single_use && coupon[0].times_used >= 1) {
-        return { discountApplied: false, discountAmount: 0, finalPrice: 0, driverCredit: 0 };
-      }
-
-      if (coupon[0].max_uses != null && coupon[0].uses_count >= coupon[0].max_uses) {
-        return { discountApplied: false, discountAmount: 0, finalPrice: 0, driverCredit: 0 };
-      }
-
-      discountAmount = coupon[0].discount_value || 0;
-      const newRedemptionId = uuidv4();
-
-      await db.insert(promotion_redemptions).values({
-        id: newRedemptionId,
-        rideId,
-        couponId: coupon[0].id,
-        passengerId,
-        redemptionCode: couponCode,
-        amount_discounted: discountAmount,
-      });
-
-      await db.update(coupons).set({
-        times_used: (coupon[0].times_used || 0) + 1,
-      }).where(eq(coupons.id, coupon[0].id));
-
-      redemptionId = newRedemptionId;
-    }
+  if (ride.passengerId !== passengerId) {
+    throw Object.assign(new Error("Ride does not belong to this passenger"), { statusCode: 403 });
   }
 
-  const ride = await db.select().from(rides).where(eq(rides.id, rideId));
+  const originalPriceCents = Number(ride.finalPassengerPrice);
 
-  if (ride.length === 0) {
-    return { discountApplied: false, discountAmount: 0, finalPrice: 0, driverCredit: 0 };
+  if (!couponCode) {
+    return {
+      discountApplied: false,
+      discountCents: 0,
+      finalPriceCents: originalPriceCents,
+      driverCreditCents: Number(ride.driverCredit),
+    };
   }
 
-  const basePrice = ride[0].finalPassengerPrice;
-  const driverCredit = basePrice;
+  const existingRedemption = await db
+    .select()
+    .from(promotion_redemptions)
+    .where(eq(promotion_redemptions.rideId, rideId))
+    .limit(1);
 
-  const finalPrice = basePrice - discountAmount;
+  if (existingRedemption.length > 0) {
+    const discountCents = Number(existingRedemption[0].amount_discounted);
+    return {
+      discountApplied: discountCents > 0,
+      discountCents,
+      finalPriceCents: Math.max(0, originalPriceCents - discountCents),
+      driverCreditCents: Math.max(0, originalPriceCents - discountCents),
+      redemptionId: existingRedemption[0].id,
+    };
+  }
+
+  const evaluation = await evaluateCoupon(couponCode, passengerId, originalPriceCents);
+  if (!evaluation.valid) {
+    throw Object.assign(new Error(evaluation.reason || "Cupom inválido"), { statusCode: 400 });
+  }
+
+  const redemptionId = await redeemCoupon(evaluation, rideId, passengerId);
+  if (!redemptionId) {
+    throw Object.assign(new Error("Cupom esgotado"), { statusCode: 400 });
+  }
+
+  const finalPriceCents = originalPriceCents - evaluation.discountCents;
+
+  if (APPLICABLE_STATUSES.includes(ride.status)) {
+    await db
+      .update(rides)
+      .set({
+        promotionDiscount: evaluation.discountCents,
+        finalPassengerPrice: finalPriceCents,
+        // Regra de negócio: motorista recebe o valor líquido pago pelo passageiro.
+        driverCredit: finalPriceCents,
+        updatedAt: new Date(),
+      })
+      .where(eq(rides.id, rideId));
+  }
 
   return {
-    discountApplied: discountAmount > 0,
-    discountAmount,
-    finalPrice: Math.max(0, finalPrice),
-    driverCredit: Math.max(0, driverCredit),
+    discountApplied: true,
+    discountCents: evaluation.discountCents,
+    finalPriceCents,
+    driverCreditCents: finalPriceCents,
     redemptionId,
   };
 }
@@ -84,15 +285,31 @@ export async function createCampaign(
   targetType: "ride" | "user" | "region" | "category" = "ride",
   maxUses?: number,
   startDate?: Date,
-  endDate?: Date
+  endDate?: Date,
+  targetValue?: string,
+  description?: string
 ): Promise<string> {
+  if (discountType === "percent" && (discountValue <= 0 || discountValue > 100)) {
+    throw Object.assign(new Error("Percent discount must be between 1 and 100"), {
+      statusCode: 400,
+    });
+  }
+  if (discountType === "fixed" && discountValue <= 0) {
+    throw Object.assign(new Error("Fixed discount must be positive"), { statusCode: 400 });
+  }
+  if (startDate && endDate && new Date(startDate) > new Date(endDate)) {
+    throw Object.assign(new Error("startDate must be before endDate"), { statusCode: 400 });
+  }
+
   const id = uuidv4();
   await db.insert(campaigns).values({
     id,
     name,
+    description,
     discount_type: discountType,
-    discount_value: discountValue,
+    discount_value: Math.round(discountValue),
     target_type: targetType,
+    target_value: targetValue,
     max_uses: maxUses,
     start_date: startDate,
     end_date: endDate,
@@ -103,13 +320,50 @@ export async function createCampaign(
 }
 
 export async function generateCouponCode(campaignId: string): Promise<string> {
-  const code = `FAIR${uuidv4().toString().substring(0, 8).toUpperCase()}`;
+  const campaign = await db.select().from(campaigns).where(eq(campaigns.id, campaignId));
+  if (campaign.length === 0) {
+    throw Object.assign(new Error("Campaign not found"), { statusCode: 404 });
+  }
+
+  const code = `FAIR${uuidv4().replace(/-/g, "").substring(0, 8).toUpperCase()}`;
   await db.insert(coupons).values({
     id: uuidv4(),
     code,
     campaignId,
+    discount_value: 0,
     is_single_use: true,
+    is_active: true,
   });
 
   return code;
+}
+
+/** Cancela os resgates de uma corrida (usado em cancelamento). */
+export async function releaseRedemptions(rideId: string): Promise<void> {
+  const redemptions = await db
+    .select()
+    .from(promotion_redemptions)
+    .where(eq(promotion_redemptions.rideId, rideId));
+
+  if (redemptions.length === 0) return;
+
+  const couponIds: string[] = [
+    ...new Set(
+      redemptions
+        .map((r: { couponId: string | null }) => r.couponId)
+        .filter((id: string | null): id is string => Boolean(id))
+    ),
+  ];
+
+  await db.delete(promotion_redemptions).where(eq(promotion_redemptions.rideId, rideId));
+
+  if (couponIds.length > 0) {
+    await db
+      .update(coupons)
+      .set({
+        uses_count: sql`GREATEST(${coupons.uses_count} - 1, 0)`,
+        times_used: sql`GREATEST(${coupons.times_used} - 1, 0)`,
+      })
+      .where(inArray(coupons.id, couponIds));
+  }
 }

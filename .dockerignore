@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+.github
+.idea
+**/*.log
+.env
+.env.*
+!.env.example
+apps
+tests
+drizzle
+*.tsbuildinfo

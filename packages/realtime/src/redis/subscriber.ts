@@ -1,16 +1,33 @@
 import Redis from "ioredis";
 import { RideEvent, RideEventType } from "../types";
-import { v4 as uuidv4 } from "uuid";
 
+/**
+ * Assinante de eventos de corrida.
+ * Sem REDIS_URL configurado, `startListening` vira no-op seguro.
+ */
 export class EventSubscriber {
-  private redis: Redis;
+  private redis: Redis | null;
   private channel: string;
   private eventHandlers: Map<RideEventType, ((event: RideEvent) => void)[]>;
 
-  constructor(redisUrl: string = "redis://localhost:6379", namespace: string = "fairmove") {
-    this.redis = new Redis(redisUrl);
+  constructor(
+    redisUrl: string = process.env.REDIS_URL || "",
+    namespace: string = "fairmove"
+  ) {
     this.channel = `${namespace}:events`;
     this.eventHandlers = new Map();
+    if (!redisUrl) {
+      this.redis = null;
+      return;
+    }
+    this.redis = new Redis(redisUrl, {
+      lazyConnect: true,
+      maxRetriesPerRequest: 1,
+      retryStrategy: (times) => Math.min(times * 200, 5000),
+    });
+    this.redis.on("error", (err) => {
+      console.warn(`[realtime] subscriber Redis error: ${err.message}`);
+    });
   }
 
   on(eventType: RideEventType, handler: (event: RideEvent) => void): void {
@@ -31,10 +48,19 @@ export class EventSubscriber {
   }
 
   async startListening(): Promise<void> {
+    if (!this.redis) return;
+
+    if (this.redis.status === "wait") {
+      await this.redis.connect();
+    }
     const subscriber = this.redis.duplicate();
+    subscriber.on("error", (err) => {
+      console.warn(`[realtime] subscriber connection error: ${err.message}`);
+    });
     await subscriber.subscribe(this.channel);
 
     subscriber.on("message", (channel, message) => {
+      if (channel !== this.channel) return;
       try {
         const event: RideEvent = JSON.parse(message);
         const handlers = this.eventHandlers.get(event.eventType);
@@ -48,6 +74,10 @@ export class EventSubscriber {
   }
 
   async close(): Promise<void> {
-    await this.redis.quit();
+    if (this.redis) {
+      await this.redis.quit().catch(() => undefined);
+    }
   }
 }
+
+export const eventSubscriber = new EventSubscriber();

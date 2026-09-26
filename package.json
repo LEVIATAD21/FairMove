@@ -8,9 +8,17 @@
     "apps/*"
   ],
   "scripts": {
+    "build": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
+    "start": "node dist/backend/src/index.js",
     "test": "jest",
     "lint": "tsc --noEmit",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
@@ -21,12 +29,19 @@
     "@types/morgan": "^1.9.9",
     "@types/node": "^22.15.0",
     "@types/uuid": "^10.0.0",
+    "drizzle-kit": "^0.31.11",
     "ioredis": "^6.0.0",
     "jest": "^30.4.2",
     "ts-jest": "^29.4.12",
+    "tsc-alias": "^1.9.5",
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@fairmove/config": "workspace:*",
+    "@fairmove/design-system": "workspace:*",
+    "@fairmove/shared-db": "workspace:*",
+    "@fairmove/shared-types": "workspace:*",
+    "@fairmove/validation": "workspace:*",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",

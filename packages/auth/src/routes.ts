@@ -1,213 +1,441 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { db, users, sessions, verificationTokens, onboardingCompletion } from "@fairmove/shared-db";
-import { eq } from "drizzle-orm";
+import { eq, and, ne } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
-import { sign, verify } from "jsonwebtoken";
-import { hash, compare } from "bcrypt";
-
-async function hashPassword(password: string): Promise<string> {
-  return hash(password, 10);
-}
-
-async function comparePassword(password: string, hash: string): Promise<boolean> {
-  return compare(password, hash);
-}
+import { createHash, randomBytes } from "crypto";
+import { sign, verify, TokenExpiredError, JsonWebTokenError } from "jsonwebtoken";
+import {
+  RegisterSchema,
+  LoginSchema,
+  ForgotPasswordSchema,
+  ResetPasswordSchema,
+  PasswordSchema,
+  validateBody,
+} from "@fairmove/validation";
+import { hashPassword, comparePassword } from "./utils/password";
+import {
+  requireAuth,
+  getJwtSecret,
+  getRefreshTokenSecret,
+  type JwtPayloadShape,
+} from "./middleware";
 
 const router = Router();
 
+function accessTokenTtl(): string {
+  return process.env.JWT_EXPIRES_IN || "1d";
+}
+
+function refreshTokenTtl(): string {
+  return process.env.REFRESH_TOKEN_EXPIRES_IN || "30d";
+}
+
+/** ms de uma duração tipo "15m"/"30d"/"1d" — usada para alinhar a sessão. */
+function ttlToMs(ttl: string): number {
+  const match = /^(\d+)\s*(s|m|h|d)?$/.exec(ttl.trim());
+  if (!match) return 30 * 24 * 60 * 60 * 1000;
+  const value = Number(match[1]);
+  const unit = match[2] || "s";
+  const factor: Record<string, number> = {
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+  };
+  return value * factor[unit];
+}
+
+async function issueTokens(userId: string, role: string, sessionId?: string) {
+  const sid = sessionId || uuidv4();
+  const accessToken = sign({ userId, role, sessionId: sid }, getJwtSecret(), {
+    expiresIn: accessTokenTtl(),
+  });
+  const refreshToken = sign(
+    { userId, role, sessionId: sid, type: "refresh" },
+    getRefreshTokenSecret(),
+    { expiresIn: refreshTokenTtl() }
+  );
+
+  const expiresAt = new Date(Date.now() + Math.max(ttlToMs(refreshTokenTtl()), ttlToMs(accessTokenTtl())));
+
+  if (sessionId) {
+    await db
+      .update(sessions)
+      .set({ token: refreshToken, role, expiresAt, updatedAt: new Date() })
+      .where(eq(sessions.id, sessionId));
+  } else {
+    await db.insert(sessions).values({ id: sid, userId, role, token: refreshToken, expiresAt });
+  }
+
+  return { accessToken, refreshToken, sessionId: sid };
+}
+
+function publicUser(row: { id: string; name: string; email: string; role: string }) {
+  return { id: row.id, name: row.name, email: row.email, role: row.role };
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  const pg = error as { code?: string };
+  return pg?.code === "23505";
+}
+
 // Register
-router.post("/register", async (req, res) => {
+router.post("/register", validateBody(RegisterSchema), async (req: Request, res: Response) => {
   try {
     const { name, email, password } = req.body;
 
-    if (!name || !email || !password) {
-      return res.status(400).json({ error: "Name, email and password are required" });
-    }
-
-    const existingUser = await db.select().from(users).where(eq(users.email, email));
-
+    const existingUser = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
     if (existingUser.length > 0) {
-      return res.status(409).json({ error: "Email already registered" });
+      res.status(409).json({ error: "Email already registered" });
+      return;
     }
 
     const passwordHash = await hashPassword(password);
 
-    const newUser = await db.insert(users).values({
-      id: uuidv4(),
-      name,
-      email,
-      passwordHash,
-      role: "passenger",
-    }).returning({ id: users.id, name: users.name, email: users.email, role: users.role });
+    let newUser: { id: string; name: string; email: string; role: string };
+    try {
+      const created = await db
+        .insert(users)
+        .values({ id: uuidv4(), name, email, passwordHash, role: "passenger" })
+        .returning({ id: users.id, name: users.name, email: users.email, role: users.role });
+      newUser = created[0];
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        res.status(409).json({ error: "Email already registered" });
+        return;
+      }
+      throw error;
+    }
 
-    // Create default onboarding completion entries
     await db.insert(onboardingCompletion).values({
-      userId: newUser[0].id,
+      userId: newUser.id,
       step: "basic_info",
       completed: true,
+      completedAt: new Date(),
     });
 
-    // Create session
-    const token = sign({ userId: newUser[0].id, role: newUser[0].role }, process.env.JWT_SECRET!, {
-      expiresIn: process.env.JWT_EXPIRES_IN || "1d",
-    });
+    const { accessToken, refreshToken } = await issueTokens(newUser.id, newUser.role);
 
-    const sessionId = uuidv4();
-    await db.insert(sessions).values({
-      id: sessionId,
-      userId: newUser[0].id,
-      token,
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-    });
-
-    return res.status(201).json({
-      user: newUser[0],
-      token,
+    res.status(201).json({
+      user: publicUser(newUser),
+      token: accessToken,
+      refreshToken,
     });
   } catch (error) {
     console.error("Register error:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
 // Login
-router.post("/login", async (req, res) => {
+router.post("/login", validateBody(LoginSchema), async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: "Email and password are required" });
-    }
-
     const user = await db.select().from(users).where(eq(users.email, email));
-
     if (user.length === 0) {
-      return res.status(401).json({ error: "Invalid credentials" });
+      res.status(401).json({ error: "Invalid credentials" });
+      return;
     }
 
     const isValidPassword = await comparePassword(password, user[0].passwordHash);
-
     if (!isValidPassword) {
-      return res.status(401).json({ error: "Invalid credentials" });
+      res.status(401).json({ error: "Invalid credentials" });
+      return;
     }
 
-    const token = sign({ userId: user[0].id, role: user[0].role }, process.env.JWT_SECRET!, {
-      expiresIn: process.env.JWT_EXPIRES_IN || "1d",
-    });
+    const { accessToken, refreshToken } = await issueTokens(user[0].id, user[0].role);
 
-    const sessionId = uuidv4();
-    await db.insert(sessions).values({
-      id: sessionId,
-      userId: user[0].id,
-      token,
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-    });
-
-    return res.json({
-      user: {
-        id: user[0].id,
-        name: user[0].name,
-        email: user[0].email,
-        role: user[0].role,
-      },
-      token,
+    res.json({
+      user: publicUser(user[0]),
+      token: accessToken,
+      refreshToken,
     });
   } catch (error) {
     console.error("Login error:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Refresh token
-router.post("/refresh-token", async (req, res) => {
+// Refresh token (com rotação: o refresh antigo é invalidado)
+router.post("/refresh-token", async (req: Request, res: Response) => {
   try {
-    const { refreshToken } = req.body;
+    const { refreshToken } = req.body ?? {};
 
-    if (!refreshToken) {
-      return res.status(400).json({ error: "Refresh token is required" });
+    if (!refreshToken || typeof refreshToken !== "string") {
+      res.status(400).json({ error: "Refresh token is required" });
+      return;
     }
 
-    const decoded = verify(refreshToken, process.env.REFRESH_TOKEN_SECRET!) as { userId: string };
+    let payload: JwtPayloadShape & { type?: string };
+    try {
+      payload = verify(refreshToken, getRefreshTokenSecret()) as JwtPayloadShape & { type?: string };
+    } catch (error) {
+      if (error instanceof TokenExpiredError) {
+        res.status(401).json({ error: "Refresh token expired" });
+        return;
+      }
+      if (error instanceof JsonWebTokenError) {
+        res.status(401).json({ error: "Invalid refresh token" });
+        return;
+      }
+      throw error;
+    }
 
-    const session = await db.select().from(sessions).where(eq(sessions.token, refreshToken));
+    if (payload.type !== "refresh" || !payload.sessionId || !payload.userId) {
+      res.status(401).json({ error: "Invalid refresh token" });
+      return;
+    }
 
+    const session = await db.select().from(sessions).where(eq(sessions.id, payload.sessionId));
     if (session.length === 0) {
-      return res.status(401).json({ error: "Invalid refresh token" });
+      res.status(401).json({ error: "Invalid refresh token" });
+      return;
     }
 
-    const newToken = sign({ userId: session[0].userId, role: session[0].role }, process.env.JWT_SECRET!, {
-      expiresIn: process.env.JWT_EXPIRES_IN || "1d",
-    });
+    if (session[0].token !== refreshToken) {
+      // Reuso detectado: revoga a sessão inteira por segurança.
+      await db.delete(sessions).where(eq(sessions.id, session[0].id));
+      res.status(401).json({ error: "Refresh token reuse detected, session revoked" });
+      return;
+    }
 
-    await db.update(sessions).set({
-      token: newToken,
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-    }).where(eq(sessions.id, session[0].id));
+    if (session[0].expiresAt && session[0].expiresAt.getTime() < Date.now()) {
+      res.status(401).json({ error: "Session expired" });
+      return;
+    }
 
-    return res.json({ token: newToken });
+    const user = await db
+      .select({ id: users.id, role: users.role })
+      .from(users)
+      .where(eq(users.id, payload.userId));
+
+    if (user.length === 0) {
+      res.status(401).json({ error: "User not found" });
+      return;
+    }
+
+    const tokens = await issueTokens(user[0].id, user[0].role, session[0].id);
+
+    res.json({ token: tokens.accessToken, refreshToken: tokens.refreshToken });
   } catch (error) {
     console.error("Refresh token error:", error);
-    return res.status(401).json({ error: "Invalid refresh token" });
+    res.status(401).json({ error: "Invalid refresh token" });
   }
 });
 
 // Verify token
-router.get("/verify", async (req, res) => {
+router.get("/verify", requireAuth, async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ error: "Authorization header required" });
-    }
-
-    const token = authHeader.split(" ")[1];
-
-    const decoded = verify(token, process.env.JWT_SECRET!) as { userId: string; role: string };
-
-    const user = await db.select({ id: users.id, name: users.name, email: users.email, role: users.role }).from(users).where(eq(users.id, decoded.userId));
+    const user = await db
+      .select({ id: users.id, name: users.name, email: users.email, role: users.role })
+      .from(users)
+      .where(eq(users.id, req.user!.id));
 
     if (user.length === 0) {
-      return res.status(404).json({ error: "User not found" });
+      res.status(404).json({ error: "User not found" });
+      return;
     }
 
-    return res.json({ user: user[0] });
+    res.json({ user: user[0] });
   } catch (error) {
     console.error("Verify token error:", error);
-    return res.status(401).json({ error: "Invalid token" });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Forgot password
-router.post("/forgot-password", async (req, res) => {
+// Logout (revoga a sessão atual)
+router.post("/logout", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { email } = req.body;
-
-    if (!email) {
-      return res.status(400).json({ error: "Email is required" });
-    }
-
-    const user = await db.select().from(users).where(eq(users.email, email));
-
-    if (user.length === 0) {
-      // Don't reveal if user exists
-      return res.json({ message: "If an account with this email exists, a password reset link has been sent." });
-    }
-
-    // Create verification token for password reset
-    const resetToken = uuidv4();
-    await db.insert(verificationTokens).values({
-      id: uuidv4(),
-      userId: user[0].id,
-      token: resetToken,
-      expiresAt: new Date(Date.now() + 3600000), // 1 hour
-    });
-
-    // In a real app, send email here
-    // For MVP, we'll just return the token info
-    return res.json({ message: "Password reset token generated", resetToken });
+    await db.delete(sessions).where(eq(sessions.id, req.user!.sessionId));
+    res.status(204).send();
   } catch (error) {
-    console.error("Forgot password error:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    console.error("Logout error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+// Forgot password — nunca expõe o token em produção
+router.post(
+  "/forgot-password",
+  validateBody(ForgotPasswordSchema),
+  async (req: Request, res: Response) => {
+    try {
+      const { email } = req.body;
+
+      const user = await db.select().from(users).where(eq(users.email, email));
+
+      const response = {
+        message: "If an account with this email exists, a password reset link has been sent.",
+      };
+
+      if (user.length === 0) {
+        res.json(response);
+        return;
+      }
+
+      // Invalida tokens anteriores não utilizados
+      await db.delete(verificationTokens).where(eq(verificationTokens.userId, user[0].id));
+
+      const rawToken = randomBytes(32).toString("hex");
+      await db.insert(verificationTokens).values({
+        id: uuidv4(),
+        userId: user[0].id,
+        token: hashToken(rawToken),
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hora
+      });
+
+      // TODO: integrar provedor de e-mail (SMTP/Mailgun/SES).
+      // Enquanto não houver provedor, o link é registrado apenas no log do servidor.
+      console.info(`[password-reset] user=${user[0].id} token=${rawToken}`);
+
+      // Em desenvolvimento, permite obter o token para testar o fluxo.
+      const exposeToken =
+        process.env.NODE_ENV !== "production" && process.env.EXPOSE_RESET_TOKEN === "true";
+      res.json(exposeToken ? { ...response, resetToken: rawToken } : response);
+    } catch (error) {
+      console.error("Forgot password error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+// Reset password
+router.post(
+  "/reset-password",
+  validateBody(ResetPasswordSchema),
+  async (req: Request, res: Response) => {
+    try {
+      const { token, password } = req.body;
+
+      const found = await db
+        .select()
+        .from(verificationTokens)
+        .where(eq(verificationTokens.token, hashToken(token)));
+
+      if (found.length === 0) {
+        res.status(400).json({ error: "Invalid or expired reset token" });
+        return;
+      }
+
+      if (found[0].expiresAt && found[0].expiresAt.getTime() < Date.now()) {
+        res.status(400).json({ error: "Invalid or expired reset token" });
+        return;
+      }
+
+      const passwordHash = await hashPassword(password);
+      await db
+        .update(users)
+        .set({ passwordHash, updatedAt: new Date() })
+        .where(eq(users.id, found[0].userId));
+
+      // Token de uso único + força reautenticação
+      await db.delete(verificationTokens).where(eq(verificationTokens.userId, found[0].userId));
+      await db.delete(sessions).where(eq(sessions.userId, found[0].userId));
+
+      res.json({ message: "Password has been reset. Please sign in again." });
+    } catch (error) {
+      console.error("Reset password error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+// Change password (usuário autenticado)
+router.post(
+  "/change-password",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    try {
+      const { currentPassword, newPassword } = req.body ?? {};
+      if (!currentPassword || !newPassword) {
+        res.status(400).json({ error: "currentPassword and newPassword are required" });
+        return;
+      }
+
+      const parsed = PasswordSchema.safeParse(newPassword);
+      if (!parsed.success) {
+        res.status(400).json({
+          error: "Validation failed",
+          details: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
+        });
+        return;
+      }
+
+      const user = await db.select().from(users).where(eq(users.id, req.user!.id));
+      if (user.length === 0) {
+        res.status(404).json({ error: "User not found" });
+        return;
+      }
+
+      const valid = await comparePassword(currentPassword, user[0].passwordHash);
+      if (!valid) {
+        res.status(401).json({ error: "Current password is incorrect" });
+        return;
+      }
+
+      const passwordHash = await hashPassword(newPassword);
+      await db
+        .update(users)
+        .set({ passwordHash, updatedAt: new Date() })
+        .where(eq(users.id, req.user!.id));
+
+      // Revoga as demais sessões, mantendo a atual ativa
+      await db
+        .delete(sessions)
+        .where(
+          and(eq(sessions.userId, req.user!.id), ne(sessions.id, req.user!.sessionId))
+        );
+
+      res.json({ message: "Password updated" });
+    } catch (error) {
+      console.error("Change password error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+// Sessões ativas do usuário
+router.get("/sessions", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const rows = await db
+      .select({
+        id: sessions.id,
+        createdAt: sessions.createdAt,
+        expiresAt: sessions.expiresAt,
+        current: eq(sessions.id, req.user!.sessionId),
+      })
+      .from(sessions)
+      .where(eq(sessions.userId, req.user!.id));
+
+    res.json({ sessions: rows });
+  } catch (error) {
+    console.error("List sessions error:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Revoga uma sessão específica (apenas a própria)
+router.delete("/sessions/:sessionId", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { sessionId } = req.params as { sessionId: string };
+    const deleted = await db
+      .delete(sessions)
+      .where(and(eq(sessions.id, sessionId), eq(sessions.userId, req.user!.id)))
+      .returning({ id: sessions.id });
+
+    if (deleted.length === 0) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    res.status(204).send();
+  } catch (error) {
+    console.error("Delete session error:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 

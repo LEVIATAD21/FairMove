@@ -1,140 +1,247 @@
-import { db, emergency_reserves, reserve_transactions } from "@fairmove/shared-db";
-import { eq } from "drizzle-orm";
+import { db, emergency_reserves, reserve_transactions, type Executor } from "@fairmove/shared-db";
+import { eq, sql } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 
+type Exec = Executor;
+
+export type ReservePurpose =
+  | "fuel"
+  | "maintenance"
+  | "accident"
+  | "mechanical"
+  | "period_without_work"
+  | "emergency";
+
+export const RESERVE_PURPOSES: ReservePurpose[] = [
+  "fuel",
+  "maintenance",
+  "accident",
+  "mechanical",
+  "period_without_work",
+  "emergency",
+];
+
+type BucketColumn =
+  | "fuel_reserve"
+  | "maintenance_reserve"
+  | "accident_reserve"
+  | "mechanical_reserve"
+  | "period_without_work_reserve"
+  | "emergency_usage";
+
+/** Coluna do bucket correspondente a cada finalidade. */
+const PURPOSE_COLUMN: Record<ReservePurpose, BucketColumn> = {
+  fuel: "fuel_reserve",
+  maintenance: "maintenance_reserve",
+  accident: "accident_reserve",
+  mechanical: "mechanical_reserve",
+  period_without_work: "period_without_work_reserve",
+  emergency: "emergency_usage",
+};
+
+export class ReservePurposeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReservePurposeError";
+  }
+}
+
+export class ReserveLockedError extends Error {
+  constructor() {
+    super("Emergency reserve is locked");
+    this.name = "ReserveLockedError";
+  }
+}
+
+export class InsufficientReserveFundsError extends Error {
+  constructor(purpose: string) {
+    super(`Insufficient funds in "${purpose}" reserve bucket`);
+    this.name = "InsufficientReserveFundsError";
+  }
+}
+
+function normalizePurpose(purpose?: string): ReservePurpose {
+  const normalized = (purpose || "emergency").trim().toLowerCase().replace(/\s+/g, "_");
+  if ((RESERVE_PURPOSES as string[]).includes(normalized)) {
+    return normalized as ReservePurpose;
+  }
+  // Sinônimos aceitos
+  const aliases: Record<string, ReservePurpose> = {
+    "period without work": "period_without_work",
+    without_work: "period_without_work",
+    no_work: "period_without_work",
+  };
+  if (aliases[normalized]) return aliases[normalized];
+  throw new ReservePurposeError(
+    `Unknown reserve purpose "${purpose}". Valid: ${RESERVE_PURPOSES.join(", ")}`
+  );
+}
+
+function toCents(amount: number): number {
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+    throw new ReservePurposeError("Amount must be a positive number");
+  }
+  return Math.round(amount * 100);
+}
+
+/**
+ * Reserva de emergência do motorista.
+ *
+ * Invariante: `total_reserve` é sempre a soma dos buckets
+ * (fuel + maintenance + accident + mechanical + period_without_work + emergency_usage).
+ *
+ * `driverId` armazena o **usuário** do motorista (users.id), o mesmo identificador
+ * usado por carteiras e assinaturas.
+ */
 export class ReserveEngine {
-  async getReserve(driverId: string) {
-    const reserve = await db.select().from(emergency_reserves).where(
-      eq(emergency_reserves.driverId, driverId)
-    );
+  async getReserve(driverUserId: string, exec: Exec = db) {
+    const reserve = await exec
+      .select()
+      .from(emergency_reserves)
+      .where(eq(emergency_reserves.driverId, driverUserId));
     return reserve.length > 0 ? reserve[0] : null;
   }
 
-  async initializeReserve(driverId: string) {
-    const existing = await this.getReserve(driverId);
+  async initializeReserve(driverUserId: string, exec: Exec = db) {
+    const existing = await this.getReserve(driverUserId, exec);
+    if (existing) return existing;
 
-    if (existing) {
-      return existing;
+    try {
+      const created = await exec
+        .insert(emergency_reserves)
+        .values({
+          id: uuidv4(),
+          driverId: driverUserId,
+          total_reserve: 0,
+          fuel_reserve: 0,
+          maintenance_reserve: 0,
+          accident_reserve: 0,
+          mechanical_reserve: 0,
+          period_without_work_reserve: 0,
+          emergency_usage: 0,
+          is_locked: false,
+        })
+        .returning();
+      return created[0];
+    } catch (error) {
+      const again = await this.getReserve(driverUserId, exec);
+      if (again) return again;
+      throw error;
     }
-
-    const id = uuidv4();
-    await db.insert(emergency_reserves).values({
-      id,
-      driverId,
-      total_reserve: 0,
-      fuel_reserve: 0,
-      maintenance_reserve: 0,
-      accident_reserve: 0,
-      mechanical_reserve: 0,
-      period_without_work_reserve: 0,
-      emergency_usage: 0,
-      is_locked: false,
-    });
-
-    return this.getReserve(driverId);
   }
 
-  async contributeToReserve(driverId: string, amount: number, purpose: string) {
-    const amountInCents = Math.round(amount * 100);
+  /**
+   * Contribui para a reserva (buckets).
+   * Não move dinheiro da carteira — combine com `walletEngine` numa transação.
+   */
+  async contributeToReserve(
+    driverUserId: string,
+    amount: number,
+    purpose?: string,
+    exec: Exec = db
+  ) {
+    const cents = toCents(amount);
+    const bucket = PURPOSE_COLUMN[normalizePurpose(purpose)];
 
-    const reserve = await this.getReserve(driverId);
-    if (!reserve) {
-      await this.initializeReserve(driverId);
-    }
+    await this.initializeReserve(driverUserId, exec);
 
-    const newReserve = Number(reserve?.total_reserve) || 0;
-    const newTotal = newReserve + amountInCents;
-    const newFuel = (Number(reserve?.fuel_reserve) || 0);
-    const newMaintenance = (Number(reserve?.maintenance_reserve) || 0);
-    const newAccident = (Number(reserve?.accident_reserve) || 0);
-    const newMechanical = (Number(reserve?.mechanical_reserve) || 0);
-    const newPeriodWithoutWork = (Number(reserve?.period_without_work_reserve) || 0);
-    const newEmergencyUsage = (Number(reserve?.emergency_usage) || 0);
-
-    let allocatedFuel = newFuel;
-    let allocatedMaintenance = newMaintenance;
-    let allocatedAccident = newAccident;
-    let allocatedMechanical = newMechanical;
-    let allocatedPeriodWithoutWork = newPeriodWithoutWork;
-    let allocatedEmergencyUsage = newEmergencyUsage;
-
-    const lowerPurpose = purpose.toLowerCase();
-    if (lowerPurpose === "fuel") {
-      allocatedFuel = newTotal;
-    } else if (lowerPurpose === "maintenance") {
-      allocatedMaintenance = newTotal;
-    } else if (lowerPurpose === "accident") {
-      allocatedAccident = newTotal;
-    } else if (lowerPurpose === "mechanical") {
-      allocatedMechanical = newTotal;
-    } else if (lowerPurpose === "period without work") {
-      allocatedPeriodWithoutWork = newTotal;
-    } else if (lowerPurpose === "emergency") {
-      allocatedEmergencyUsage = newTotal;
-    } else {
-      allocatedEmergencyUsage = newTotal;
-    }
-
-    await db.update(emergency_reserves).set({
-      total_reserve: newTotal,
-      fuel_reserve: allocatedFuel,
-      maintenance_reserve: allocatedMaintenance,
-      accident_reserve: allocatedAccident,
-      mechanical_reserve: allocatedMechanical,
-      period_without_work_reserve: allocatedPeriodWithoutWork,
-      emergency_usage: allocatedEmergencyUsage,
+    const patch: Record<string, unknown> = {
+      total_reserve: sql`${emergency_reserves.total_reserve} + ${cents}`,
       updated_at: new Date(),
-    }).where(eq(emergency_reserves.driverId, driverId));
+    };
+    patch[bucket] = sql`${emergency_reserves[bucket]} + ${cents}`;
 
-    await db.insert(reserve_transactions).values({
-      id: uuidv4(),
-      reserveId: uuidv4(),
-      transactionId: uuidv4(),
-      amount: amountInCents,
-      currency: "BRL",
-      purpose,
-      direction: "contribution",
-      status: "completed",
-    });
+    await exec
+      .update(emergency_reserves)
+      .set(patch as Record<string, never>)
+      .where(eq(emergency_reserves.driverId, driverUserId));
 
-    return this.getReserve(driverId);
+    return this.getReserve(driverUserId, exec);
   }
 
-  async payoutFromReserve(driverId: string, amount: number, purpose: string) {
-    const amountInCents = Math.round(amount * 100);
+  /**
+   * Resgata da reserva (buckets).
+   * Não devolve dinheiro para a carteira — combine com `walletEngine`.
+   */
+  async payoutFromReserve(
+    driverUserId: string,
+    amount: number,
+    purpose?: string,
+    exec: Exec = db,
+    options: { ledgerTransactionId?: string } = {}
+  ) {
+    const cents = toCents(amount);
+    const normalized = normalizePurpose(purpose);
+    const bucket = PURPOSE_COLUMN[normalized];
 
-    const reserve = await this.getReserve(driverId);
+    const reserve = await this.getReserve(driverUserId, exec);
     if (!reserve) {
-      throw new Error("Reserve not found");
+      throw new InsufficientReserveFundsError(normalized);
+    }
+    if (reserve.is_locked) {
+      throw new ReserveLockedError();
     }
 
-    const currentTotal = Number(reserve.total_reserve);
-    if (currentTotal < amountInCents) {
-      throw new Error("Insufficient reserve balance");
+    const bucketBalance = Number(
+      reserve[bucket as keyof typeof reserve] as unknown as number
+    );
+    if (bucketBalance < cents) {
+      throw new InsufficientReserveFundsError(normalized);
     }
 
-    const newTotal = currentTotal - amountInCents;
-    const newEmergencyUsage = Number(reserve.emergency_usage) || 0;
-    const reducedEmergencyUsage = Math.max(0, newEmergencyUsage - amountInCents);
-
-    await db.update(emergency_reserves).set({
-      total_reserve: newTotal,
-      emergency_usage: reducedEmergencyUsage,
+    const patch: Record<string, unknown> = {
+      total_reserve: sql`${emergency_reserves.total_reserve} - ${cents}`,
       updated_at: new Date(),
-    }).where(eq(emergency_reserves.driverId, driverId));
+    };
+    patch[bucket] = sql`${emergency_reserves[bucket]} - ${cents}`;
 
-    await db.insert(reserve_transactions).values({
+    await exec
+      .update(emergency_reserves)
+      .set(patch as Record<string, never>)
+      .where(eq(emergency_reserves.driverId, driverUserId));
+
+    const updated = await this.getReserve(driverUserId, exec);
+    const reserveId = updated?.id ?? reserve.id;
+    const transactionId = options.ledgerTransactionId ?? uuidv4();
+
+    await exec.insert(reserve_transactions).values({
       id: uuidv4(),
-      reserveId: uuidv4(),
-      transactionId: uuidv4(),
-      amount: amountInCents,
+      reserveId,
+      transactionId,
+      amount: cents,
       currency: "BRL",
-      purpose,
+      purpose: normalized,
       direction: "payout",
       status: "completed",
+      description: `Reserve payout (${normalized})`,
     });
 
-    return this.getReserve(driverId);
+    return updated;
+  }
+
+  /** Registra uma contribuição no histórico (chame junto com o wallet move). */
+  async recordContribution(
+    driverUserId: string,
+    amount: number,
+    purpose: string | undefined,
+    exec: Exec = db,
+    options: { ledgerTransactionId?: string } = {}
+  ) {
+    const cents = toCents(amount);
+    const reserve = await this.getReserve(driverUserId, exec);
+    const transactionId = options.ledgerTransactionId ?? uuidv4();
+
+    await exec.insert(reserve_transactions).values({
+      id: uuidv4(),
+      reserveId: reserve?.id ?? uuidv4(),
+      transactionId,
+      amount: cents,
+      currency: "BRL",
+      purpose: normalizePurpose(purpose),
+      direction: "contribution",
+      status: "completed",
+      description: "Reserve contribution",
+    });
   }
 }
 

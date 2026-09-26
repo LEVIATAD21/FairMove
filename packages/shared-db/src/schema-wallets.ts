@@ -28,6 +28,7 @@ export const ledger_transactions = pgTable("ledger_transactions", {
   description: text("description"),
   metadata: text("metadata"),
   status: text("status").default("completed").notNull(),
+  idempotencyKey: text("idempotency_key").unique(),
   created_at: timestamp("created_at").defaultNow().notNull(),
 });
 

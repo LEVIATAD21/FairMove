@@ -1,20 +1,41 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { db, safety_events, trust_contacts, trip_codes, incidents } from "@fairmove/shared-db";
-import { eq } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
+import { requireAuth, type AuthUser } from "../../auth/src/middleware";
+import {
+  validateBody,
+  SosSchema,
+  TrustContactSchema,
+  IncidentSchema,
+  TripCodeSchema,
+  TripCodeVerifySchema,
+} from "@fairmove/validation";
+import { loadRideForUser } from "../../rides/src/access";
 
 const router = Router();
 
-// SOS endpoint - trigger safety alert
-router.post("/sos", async (req, res) => {
+/** Responde 404/403 quando o usuário não participa da corrida (ou ela não existe). */
+async function denyUnlessParticipant(
+  res: Response,
+  rideId: string,
+  user: AuthUser
+): Promise<boolean> {
+  const access = await loadRideForUser(rideId, user);
+  if (access.ok) return false;
+
+  res.status(access.status).json({ error: access.message });
+  return true;
+}
+
+// SOS - registra alerta crítico de segurança (sempre no contexto do usuário autenticado)
+router.post("/sos", requireAuth, validateBody(SosSchema), async (req: Request, res: Response) => {
   try {
-    const { rideId, reportedBy } = req.body;
+    const { rideId } = req.body as { rideId: string };
+    const user = req.user!;
 
-    if (!rideId || !reportedBy) {
-      return res.status(400).json({ error: "Ride ID and reported by are required" });
-    }
+    if (await denyUnlessParticipant(res, rideId, user)) return;
 
-    // Create safety event
     const eventId = uuidv4();
     await db.insert(safety_events).values({
       id: eventId,
@@ -23,28 +44,29 @@ router.post("/sos", async (req, res) => {
       title: "SOS triggered",
       severity: "critical",
       status: "open",
-      reportedBy,
+      reportedBy: user.id,
     });
 
-    // In a real implementation, this would trigger SMS, email, and notification to trusted contacts
-    // For MVP, just record the event
-
-    return res.json({ message: "SOS alert triggered", eventId });
+    return res.status(201).json({ message: "SOS alert triggered", eventId });
   } catch (error) {
     console.error("SOS error:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Get safety events for a ride
-router.get("/events/:rideId", async (req, res) => {
+// Eventos de segurança de uma corrida (participantes ou admin)
+router.get("/events/:rideId", requireAuth, async (req: Request, res: Response) => {
   try {
     const { rideId } = req.params as { rideId: string };
+    const user = req.user!;
 
-    const { desc } = await import("drizzle-orm");
-    const events = await db.select().from(safety_events).where(
-      eq(safety_events.rideId, rideId)
-    ).orderBy(desc(safety_events.createdAt));
+    if (await denyUnlessParticipant(res, rideId, user)) return;
+
+    const events = await db
+      .select()
+      .from(safety_events)
+      .where(eq(safety_events.rideId, rideId))
+      .orderBy(desc(safety_events.createdAt));
 
     return res.json(events);
   } catch (error) {
@@ -53,41 +75,46 @@ router.get("/events/:rideId", async (req, res) => {
   }
 });
 
-// Add trusted contact
-router.post("/trusted-contacts", async (req, res) => {
+// Adicionar contato de confiança (sempre para o próprio usuário)
+router.post("/trusted-contacts", requireAuth, validateBody(TrustContactSchema), async (req: Request, res: Response) => {
   try {
-    const { userId, contactName, contactPhone, contactEmail, isPrimary } = req.body;
-
-    if (!userId || !contactName || !contactPhone) {
-      return res.status(400).json({ error: "User ID, contact name and phone are required" });
-    }
+    const { contactName, contactPhone, contactEmail, isPrimary } = req.body as {
+      contactName: string;
+      contactPhone: string;
+      contactEmail?: string;
+      isPrimary?: boolean;
+    };
+    const user = req.user!;
 
     const id = uuidv4();
 
     await db.insert(trust_contacts).values({
       id,
-      userId,
+      userId: user.id,
       contactName,
       contactPhone,
-      contactEmail,
-      isPrimary: isPrimary || false,
+      contactEmail: contactEmail ?? null,
+      isPrimary: isPrimary ?? false,
     });
 
-    return res.status(201).json({ message: "Trusted contact added" });
+    return res.status(201).json({ message: "Trusted contact added", id });
   } catch (error) {
     console.error("Add trusted contact error:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Get trusted contacts
-router.get("/trusted-contacts/:userId", async (req, res) => {
+// Listar contatos de confiança (próprio usuário ou admin)
+router.get("/trusted-contacts/:userId", requireAuth, async (req: Request, res: Response) => {
   try {
     const { userId } = req.params as { userId: string };
+    const user = req.user!;
 
-    const contacts = await db.select().from(trust_contacts).where(
-      eq(trust_contacts.userId, userId)
-    );
+    if (user.role !== "admin" && user.id !== userId) {
+      return res.status(403).json({ error: "You do not have access to these contacts" });
+    }
+
+    const contacts = await db.select().from(trust_contacts).where(eq(trust_contacts.userId, userId));
 
     return res.json(contacts);
   } catch (error) {
@@ -96,54 +123,62 @@ router.get("/trusted-contacts/:userId", async (req, res) => {
   }
 });
 
-// Report incident
-router.post("/incidents", async (req, res) => {
+// Reportar incidente (reportado pelo usuário autenticado, participante da corrida)
+router.post("/incidents", requireAuth, validateBody(IncidentSchema), async (req: Request, res: Response) => {
   try {
-    const { rideId, type, severity, description, reportedBy } = req.body;
+    const { rideId, type, severity, description } = req.body as {
+      rideId: string;
+      type: string;
+      severity?: string;
+      description?: string;
+    };
+    const user = req.user!;
 
-    if (!rideId || !type || !reportedBy) {
-      return res.status(400).json({ error: "Ride ID, type and reported by are required" });
-    }
+    if (await denyUnlessParticipant(res, rideId, user)) return;
 
     const id = uuidv4();
+    const incidentSeverity = severity ?? "medium";
 
     await db.insert(incidents).values({
       id,
       rideId,
       type,
-      severity: severity || "medium",
-      description: description || "",
+      severity: incidentSeverity,
+      description: description ?? "",
       status: "open",
-      reportedBy,
+      reportedBy: user.id,
     });
 
-    // Create safety event for the incident
     await db.insert(safety_events).values({
       id: uuidv4(),
       rideId,
       eventType: "incident_reported",
       title: "Incident reported",
-      severity,
+      severity: incidentSeverity,
       status: "open",
-      reportedBy,
+      reportedBy: user.id,
     });
 
-    return res.status(201).json({ message: "Incident reported" });
+    return res.status(201).json({ message: "Incident reported", id });
   } catch (error) {
     console.error("Report incident error:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Get incidents for a ride
-router.get("/incidents/:rideId", async (req, res) => {
+// Incidentes de uma corrida (participantes ou admin)
+router.get("/incidents/:rideId", requireAuth, async (req: Request, res: Response) => {
   try {
     const { rideId } = req.params as { rideId: string };
+    const user = req.user!;
 
-    const { desc } = await import("drizzle-orm");
-    const incidentList = await db.select().from(incidents).where(
-      eq(incidents.rideId, rideId)
-    ).orderBy(desc(incidents.createdAt));
+    if (await denyUnlessParticipant(res, rideId, user)) return;
+
+    const incidentList = await db
+      .select()
+      .from(incidents)
+      .where(eq(incidents.rideId, rideId))
+      .orderBy(desc(incidents.createdAt));
 
     return res.json(incidentList);
   } catch (error) {
@@ -152,16 +187,15 @@ router.get("/incidents/:rideId", async (req, res) => {
   }
 });
 
-// Generate trip code
-router.post("/trip-codes", async (req, res) => {
+// Gerar código de viagem (participante da corrida)
+router.post("/trip-codes", requireAuth, validateBody(TripCodeSchema), async (req: Request, res: Response) => {
   try {
-    const { rideId, createdBy } = req.body;
+    const { rideId } = req.body as { rideId: string };
+    const user = req.user!;
 
-    if (!rideId || !createdBy) {
-      return res.status(400).json({ error: "Ride ID and created by are required" });
-    }
+    if (await denyUnlessParticipant(res, rideId, user)) return;
 
-    const code = `FC${uuidv4().toString().substring(0, 8).toUpperCase()}`;
+    const code = `FC${uuidv4().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
 
     await db.insert(trip_codes).values({
       id: uuidv4(),
@@ -169,34 +203,33 @@ router.post("/trip-codes", async (req, res) => {
       code,
     });
 
-    return res.json({ code });
+    return res.status(201).json({ code, rideId });
   } catch (error) {
     console.error("Generate trip code error:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Verify trip code
-router.post("/trip-codes/verify", async (req, res) => {
+// Verificar código de viagem (participante da corrida vinculada ao código)
+router.post("/trip-codes/verify", requireAuth, validateBody(TripCodeVerifySchema), async (req: Request, res: Response) => {
   try {
-    const { code } = req.body;
+    const { code } = req.body as { code: string };
+    const user = req.user!;
 
-    if (!code) {
-      return res.status(400).json({ error: "Code is required" });
-    }
+    const rows = await db.select().from(trip_codes).where(eq(trip_codes.code, code));
 
-    const tripCode = await db.select().from(trip_codes).where(
-      eq(trip_codes.code, code)
-    );
-
-    if (tripCode.length === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({ error: "Trip code not found" });
     }
 
-    // Mark as verified
-    await db.update(trip_codes).set({
-      isVerified: true,
-    }).where(eq(trip_codes.code, code));
+    const tripCode = rows[0];
+
+    if (await denyUnlessParticipant(res, tripCode.rideId, user)) return;
+
+    await db
+      .update(trip_codes)
+      .set({ isVerified: true })
+      .where(eq(trip_codes.id, tripCode.id));
 
     return res.json({ code, verified: true });
   } catch (error) {

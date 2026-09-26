@@ -1,195 +1,596 @@
-import { Router } from "express";
-import { db, rides, rideLocationEvents, users } from "@fairmove/shared-db";
-import { eq, desc } from "drizzle-orm";
-import { canTransition, transitionRide } from "./state/machine";
+import { Router, type Request, type Response } from "express";
+import { db, rides, rideLocationEvents, users, drivers, risk_scores, type Ride } from "@fairmove/shared-db";
+import { eq, and, or, desc, sql } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
+import { requireAuth, type AuthUser } from "../../auth/src/middleware";
+import { validateBody, CreateRideSchema, CancelRideSchema } from "@fairmove/validation";
+import { z } from "zod";
+import {
+  haversineKm,
+  estimateDurationMinutes,
+  toCents,
+} from "@fairmove/shared-types";
+import { canTransition, transitionRide } from "./state/machine";
+import { getDriverByUserId, loadRide, loadRideForUser } from "./access";
+import { calculateQuote, PRICING_RULES } from "../../pricing/src/engine/calculator";
+import { applyPromotion, releaseRedemptions } from "../../promotions/src/engine/promotion-engine";
+import { setDriverAvailability } from "../../matching/src/engine/matching-engine";
+import { settleRidePayment } from "../../payments/src/settlement";
+import { eventPublisher } from "../../realtime/src/redis/publisher";
 
 const router = Router();
 
-// Create ride request
-router.post("/", async (req, res) => {
+const StatusUpdateSchema = z.object({
+  status: z.enum([
+    "DRIVER_ARRIVING",
+    "DRIVER_AT_PICKUP",
+    "PASSENGER_ONBOARD",
+    "IN_PROGRESS",
+  ]),
+});
+
+/** Estados que o motorista pode assumir (COMPLETED tem rota própria). */
+const DRIVER_ADVANCE_STATUSES = new Set([
+  "DRIVER_ARRIVING",
+  "DRIVER_AT_PICKUP",
+  "PASSENGER_ONBOARD",
+  "IN_PROGRESS",
+]);
+
+function centsToNumber(cents: number): number {
+  return Math.round(cents) / 100;
+}
+
+async function recordRideEvent(
+  rideId: string,
+  eventType: string,
+  lat: string | null,
+  lng: string | null,
+  metadata?: Record<string, unknown>
+) {
+  await db.insert(rideLocationEvents).values({
+    id: uuidv4(),
+    rideId,
+    eventType,
+    lat: lat ?? "0",
+    lng: lng ?? "0",
+    metadata: metadata ? JSON.stringify(metadata) : null,
+  });
+}
+
+// Criar corrida (passageiro autenticado)
+router.post("/", requireAuth, validateBody(CreateRideSchema), async (req: Request, res: Response) => {
   try {
-    const { passengerId, pickupLocationLat, pickupLocationLng, dropoffLocationLat, dropoffLocationLng } = req.body;
+    const user = req.user!;
+    const {
+      pickupLocationLat,
+      pickupLocationLng,
+      dropoffLocationLat,
+      dropoffLocationLng,
+      couponCode,
+    } = req.body as {
+      pickupLocationLat: number;
+      pickupLocationLng: number;
+      dropoffLocationLat: number;
+      dropoffLocationLng: number;
+      couponCode?: string;
+    };
 
-    if (!passengerId) {
-      return res.status(400).json({ error: "Passenger ID is required" });
+    const pickup = { lat: pickupLocationLat, lng: pickupLocationLng };
+    const dropoff = { lat: dropoffLocationLat, lng: dropoffLocationLng };
+
+    const distanceKm = haversineKm(pickup, dropoff);
+    if (!Number.isFinite(distanceKm) || distanceKm < 0.05) {
+      res.status(400).json({ error: "Pickup and dropoff locations must be different" });
+      return;
     }
 
-    // Verify passenger exists
-    const passenger = await db.select().from(users).where(eq(users.id, passengerId));
-
-    if (passenger.length === 0) {
-      return res.status(404).json({ error: "Passenger not found" });
+    // Portão de fraude: contas com risco crítico não podem solicitar corridas
+    const riskRows = await db
+      .select({ riskLevel: risk_scores.riskLevel })
+      .from(risk_scores)
+      .where(eq(risk_scores.userId, user.id));
+    if (riskRows.length > 0 && riskRows[0].riskLevel === "CRITICAL") {
+      res.status(403).json({ error: "Account blocked due to risk policy" });
+      return;
     }
 
-    // Create ride
+    const timeMinutes = estimateDurationMinutes(distanceKm);
+    const quote = calculateQuote(PRICING_RULES.baseFare, distanceKm, timeMinutes, 1.0, 0);
+
+    const baseFareCents = toCents(PRICING_RULES.baseFare);
+    const distanceFareCents = toCents(distanceKm * PRICING_RULES.perKm);
+    const timeFareCents = toCents(timeMinutes * PRICING_RULES.perMinute);
+    const originalPriceCents = toCents(quote.originalPrice);
+
     const rideId = uuidv4();
-    const status = "REQUESTED";
 
     await db.insert(rides).values({
       id: rideId,
-      passengerId,
-      status,
-      pickupLocationLat: pickupLocationLat ? String(pickupLocationLat) : "0",
-      pickupLocationLng: pickupLocationLng ? String(pickupLocationLng) : "0",
-      dropoffLocationLat: dropoffLocationLat ? String(dropoffLocationLat) : "0",
-      dropoffLocationLng: dropoffLocationLng ? String(dropoffLocationLng) : "0",
+      passengerId: user.id,
+      status: "REQUESTED",
+      pickupLocationLat: String(pickupLocationLat),
+      pickupLocationLng: String(pickupLocationLng),
+      dropoffLocationLat: String(dropoffLocationLat),
+      dropoffLocationLng: String(dropoffLocationLng),
+      baseFare: baseFareCents,
+      distanceFare: distanceFareCents,
+      timeFare: timeFareCents,
+      promotionDiscount: 0,
+      finalPassengerPrice: originalPriceCents,
+      driverCredit: originalPriceCents,
+      estimatedDistance: Math.round(distanceKm * 1000),
+      estimatedTime: Math.round(timeMinutes * 60),
     });
 
-    // Record ride location event
-    await db.insert(rideLocationEvents).values({
+    // Cupom (opcional): valida e persiste o desconto na corrida
+    if (couponCode) {
+      try {
+        await applyPromotion(rideId, user.id, couponCode);
+      } catch (error) {
+        const status = (error as { statusCode?: number }).statusCode ?? 500;
+        if (status >= 400 && status < 500) {
+          await db.delete(rides).where(eq(rides.id, rideId));
+          res.status(status).json({ error: (error as Error).message });
+          return;
+        }
+        throw error;
+      }
+    }
+
+    const finalRide = await loadRide(rideId);
+
+    await recordRideEvent(rideId, "REQUESTED", String(pickupLocationLat), String(pickupLocationLng), {
+      passengerId: user.id,
+      distanceKm: Math.round(distanceKm * 100) / 100,
+      timeMinutes,
+      quotedPrice: centsToNumber(originalPriceCents),
+    });
+
+    await eventPublisher.publishRideRequested({
       rideId,
-      eventType: "REQUESTED",
-      lat: pickupLocationLat ? String(pickupLocationLat) : "0",
-      lng: pickupLocationLng ? String(pickupLocationLng) : "0",
-      metadata: JSON.stringify({ passengerId }),
+      passengerId: user.id,
+      pickupLocation: pickup,
+      dropoffLocation: dropoff,
     });
 
-    return res.status(201).json({ rideId, status });
+    res.status(201).json({
+      rideId,
+      status: finalRide?.status ?? "REQUESTED",
+      distanceKm: Math.round(distanceKm * 100) / 100,
+      estimatedTimeSeconds: Math.round(timeMinutes * 60),
+      originalPrice: centsToNumber(originalPriceCents),
+      promotionDiscount: centsToNumber(finalRide?.promotionDiscount ?? 0),
+      totalFare: centsToNumber(finalRide?.finalPassengerPrice ?? originalPriceCents),
+      currency: "BRL",
+    });
   } catch (error) {
     console.error("Create ride error:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Get ride by ID
-router.get("/:rideId", async (req, res) => {
+// Detalhe da corrida (participantes ou admin)
+router.get("/:rideId", requireAuth, async (req: Request, res: Response) => {
   try {
     const { rideId } = req.params as { rideId: string };
+    const result = await loadRideForUser(rideId, req.user!);
 
-    const ride = await db.select().from(rides).where(eq(rides.id, rideId));
-
-    if (ride.length === 0) {
-      return res.status(404).json({ error: "Ride not found" });
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.message });
+      return;
     }
 
-    return res.json(ride[0]);
+    res.json({
+      ...result.ride,
+      totalFare: centsToNumber(result.ride.finalPassengerPrice),
+      driverCreditAmount: centsToNumber(result.ride.driverCredit),
+    });
   } catch (error) {
     console.error("Get ride error:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Accept ride (driver)
-router.post("/:rideId/accept", async (req, res) => {
+// Motorista aceita a corrida
+router.post("/:rideId/accept", requireAuth, async (req: Request, res: Response) => {
   try {
     const { rideId } = req.params as { rideId: string };
-    const { driverId } = req.body;
+    const user = req.user!;
 
-    if (!driverId) {
-      return res.status(400).json({ error: "Driver ID is required" });
+    if (user.role !== "driver" && user.role !== "admin") {
+      res.status(403).json({ error: "Only drivers can accept rides" });
+      return;
     }
 
-    const ride = await db.select().from(rides).where(eq(rides.id, rideId));
-
-    if (ride.length === 0) {
-      return res.status(404).json({ error: "Ride not found" });
+    const ride = await loadRide(rideId);
+    if (!ride) {
+      res.status(404).json({ error: "Ride not found" });
+      return;
     }
 
-    const currentStatus = ride[0].status;
-    const result = transitionRide(currentStatus, "DRIVER_ASSIGNED");
-
-    if (!result.success) {
-      return res.status(400).json({ error: result.error });
+    const driver = await getDriverByUserId(user.id);
+    if (!driver) {
+      res.status(404).json({ error: "Driver profile not found" });
+      return;
     }
 
-    await db.update(rides).set({
-      status: "DRIVER_ASSIGNED",
-      driverId,
-    }).where(eq(rides.id, rideId));
+    if (!["REQUESTED", "SEARCHING"].includes(ride.status)) {
+      res.status(400).json({ error: `Ride cannot be accepted in status ${ride.status}` });
+      return;
+    }
 
-    return res.json({ rideId, status: "DRIVER_ASSIGNED" });
+    if (!driver.available || driver.status === "offline") {
+      res.status(409).json({ error: "Driver is not available" });
+      return;
+    }
+
+    // Garante que a corrida está em busca (REQUESTED -> SEARCHING)
+    if (ride.status === "REQUESTED") {
+      const advanced = await db
+        .update(rides)
+        .set({ status: "SEARCHING", updatedAt: new Date() })
+        .where(and(eq(rides.id, rideId), eq(rides.status, "REQUESTED")))
+        .returning({ id: rides.id });
+      if (advanced.length === 0) {
+        res.status(409).json({ error: "Ride is not available for search anymore" });
+        return;
+      }
+    }
+
+    // Atômico: apenas um motorista consegue atribuir a corrida
+    const assigned = await db
+      .update(rides)
+      .set({
+        status: "DRIVER_ASSIGNED",
+        driverId: driver.id,
+        vehicleId: driver.vehicleId,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(rides.id, rideId), eq(rides.status, "SEARCHING"), sql`${rides.driverId} IS NULL`))
+      .returning({ id: rides.id });
+
+    if (assigned.length === 0) {
+      res.status(409).json({ error: "Ride was already accepted by another driver" });
+      return;
+    }
+
+    await setDriverAvailability(driver.id, false);
+
+    await recordRideEvent(
+      rideId,
+      "DRIVER_ASSIGNED",
+      ride.pickupLocationLat,
+      ride.pickupLocationLng,
+      { driverId: driver.id }
+    );
+
+    await eventPublisher.publishDriverMatched({
+      rideId,
+      driverId: driver.id,
+      driverName: (await db.select({ name: users.name }).from(users).where(eq(users.id, user.id)))[0]?.name ?? "",
+      vehiclePlate: "",
+    });
+
+    res.json({ rideId, status: "DRIVER_ASSIGNED", driverId: driver.id });
   } catch (error) {
     console.error("Accept ride error:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Complete ride
-router.post("/:rideId/complete", async (req, res) => {
+// Avanço de estado pelo motorista
+router.patch(
+  "/:rideId/status",
+  requireAuth,
+  validateBody(StatusUpdateSchema),
+  async (req: Request, res: Response) => {
+    try {
+      const { rideId } = req.params as { rideId: string };
+      const { status } = req.body as { status: string };
+      const user = req.user!;
+
+      const result = await loadRideForUser(rideId, user);
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.message });
+        return;
+        }
+      const ride = result.ride;
+
+      if (!DRIVER_ADVANCE_STATUSES.has(status)) {
+        res.status(400).json({ error: `Status ${status} cannot be set through this endpoint` });
+        return;
+      }
+
+      if (user.role !== "admin") {
+        const driver = await getDriverByUserId(user.id);
+        if (!driver || ride.driverId !== driver.id) {
+          res.status(403).json({ error: "Only the assigned driver can update this ride" });
+          return;
+        }
+      }
+
+      const transition = transitionRide(ride.status, status);
+      if (!transition.success) {
+        res.status(400).json({ error: transition.error });
+        return;
+      }
+
+      const patch: Record<string, unknown> = { status, updatedAt: new Date() };
+      if (status === "IN_PROGRESS" && !ride.startedAt) {
+        patch.startedAt = new Date();
+      }
+
+      const updated = await db
+        .update(rides)
+        .set(patch)
+        .where(and(eq(rides.id, rideId), eq(rides.status, ride.status)))
+        .returning({ id: rides.id });
+
+      if (updated.length === 0) {
+        res.status(409).json({ error: "Ride state changed concurrently" });
+        return;
+      }
+
+      await recordRideEvent(rideId, status, ride.pickupLocationLat, ride.pickupLocationLng, {
+        from: ride.status,
+        to: status,
+      });
+
+      if (status === "DRIVER_ARRIVING") {
+        await eventPublisher.publishDriverArrived({
+          rideId,
+          driverId: ride.driverId,
+        });
+      }
+      if (status === "IN_PROGRESS") {
+        await eventPublisher.publishRideStarted({
+          rideId,
+          driverId: ride.driverId,
+          startedAt: new Date().toISOString(),
+        });
+      }
+
+      res.json({ rideId, status });
+    } catch (error) {
+      console.error("Update ride status error:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+// Concluir corrida: liquida pagamento e credita o motorista
+router.post("/:rideId/complete", requireAuth, async (req: Request, res: Response) => {
   try {
     const { rideId } = req.params as { rideId: string };
-    const { driverId, totalFare } = req.body;
+    const user = req.user!;
 
-    if (!driverId || !totalFare) {
-      return res.status(400).json({ error: "Driver ID and total fare are required" });
+    const result = await loadRideForUser(rideId, user);
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.message });
+      return;
+    }
+    const ride = result.ride;
+
+    if (user.role !== "admin") {
+      const driver = await getDriverByUserId(user.id);
+      if (!driver || ride.driverId !== driver.id) {
+        res.status(403).json({ error: "Only the assigned driver can complete this ride" });
+        return;
+      }
     }
 
-    const ride = await db.select().from(rides).where(eq(rides.id, rideId));
-
-    if (ride.length === 0) {
-      return res.status(404).json({ error: "Ride not found" });
+    if (ride.status !== "IN_PROGRESS") {
+      res.status(400).json({ error: `Ride cannot be completed in status ${ride.status}` });
+      return;
     }
 
-    const currentStatus = ride[0].status;
-    const result = transitionRide(currentStatus, "COMPLETED");
-
-    if (!result.success) {
-      return res.status(400).json({ error: result.error });
+    const transition = transitionRide(ride.status, "COMPLETED");
+    if (!transition.success) {
+      res.status(400).json({ error: transition.error });
+      return;
     }
 
-    await db.update(rides).set({
+    // Preço é sempre o calculado pelo backend (nunca vem do cliente)
+    const fareCents = Number(ride.finalPassengerPrice);
+    const driverCreditCents = Number(ride.driverCredit);
+
+    const driverUserId = ride.driverId
+      ? (
+          await db
+            .select({ userId: drivers.userId })
+            .from(drivers)
+            .where(eq(drivers.id, ride.driverId))
+        )[0]?.userId
+      : null;
+
+    if (!driverUserId) {
+      res.status(400).json({ error: "Ride has no assigned driver" });
+      return;
+    }
+
+    // 1) Liquidação financeira (idempotente)
+    const settlement = await settleRidePayment({
+      rideId,
+      passengerId: ride.passengerId,
+      driverUserId,
+      fareCents,
+      driverCreditCents,
+    });
+
+    // 2) Transição de estado (atômica)
+    const updated = await db
+      .update(rides)
+      .set({ status: "COMPLETED", completedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(rides.id, rideId), eq(rides.status, "IN_PROGRESS")))
+      .returning({ id: rides.id });
+
+    if (updated.length === 0) {
+      res.status(409).json({ error: "Ride state changed concurrently" });
+      return;
+    }
+
+    // 3) Motorista volta a ficar disponível
+    if (ride.driverId) {
+      await setDriverAvailability(ride.driverId, true);
+    }
+
+    await recordRideEvent(rideId, "COMPLETED", ride.dropoffLocationLat, ride.dropoffLocationLng, {
+      settlement: {
+        paymentMethod: settlement.paymentMethod,
+        alreadySettled: settlement.alreadySettled,
+        driverTransactionId: settlement.driverTransactionId,
+      },
+      totalFare: centsToNumber(fareCents),
+    });
+
+    await eventPublisher.publishRideCompleted({
+      rideId,
+      driverId: ride.driverId,
+      completedAt: new Date().toISOString(),
+      totalFare: centsToNumber(fareCents),
+    });
+
+    res.json({
+      rideId,
       status: "COMPLETED",
-      finalPassengerPrice: Math.round(totalFare * 100),
-      driverCredit: Math.round(totalFare * 100),
-    }).where(eq(rides.id, rideId));
-
-    return res.json({ rideId, status: "COMPLETED" });
+      totalFare: centsToNumber(fareCents),
+      driverCredit: centsToNumber(driverCreditCents),
+      paymentMethod: settlement.paymentMethod,
+      alreadySettled: settlement.alreadySettled,
+      currency: "BRL",
+    });
   } catch (error) {
+    if (error instanceof Error && error.name === "InsufficientFundsError") {
+      res.status(402).json({ error: "Payment could not be processed" });
+      return;
+    }
     console.error("Complete ride error:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Cancel ride
-router.post("/:rideId/cancel", async (req, res) => {
-  try {
-    const { rideId } = req.params as { rideId: string };
-    const { cancelledBy, reason } = req.body;
+// Cancelar corrida (passageiro, motorista atribuído ou admin)
+router.post(
+  "/:rideId/cancel",
+  requireAuth,
+  validateBody(CancelRideSchema),
+  async (req: Request, res: Response) => {
+    try {
+      const { rideId } = req.params as { rideId: string };
+      const { reason } = req.body as { reason?: string };
+      const user = req.user!;
 
-    if (!cancelledBy) {
-      return res.status(400).json({ error: "Cancelled by is required" });
+      const result = await loadRideForUser(rideId, user);
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.message });
+        return;
+        }
+      const ride = result.ride;
+
+      let cancelStatus: string;
+      if (user.role === "admin") {
+        cancelStatus = "CANCELLED_BY_SYSTEM";
+      } else if (ride.passengerId === user.id) {
+        cancelStatus = "CANCELLED_BY_PASSENGER";
+      } else {
+        const driver = await getDriverByUserId(user.id);
+        if (driver && ride.driverId === driver.id) {
+          cancelStatus = "CANCELLED_BY_DRIVER";
+        } else {
+          res.status(403).json({ error: "You cannot cancel this ride" });
+          return;
+        }
+      }
+
+      if (!canTransition(ride.status, cancelStatus)) {
+        res.status(400).json({
+          error: `Invalid transition from ${ride.status} to ${cancelStatus}`,
+        });
+        return;
+      }
+
+      const updated = await db
+        .update(rides)
+        .set({
+          status: cancelStatus,
+          cancellationReason: reason || null,
+          cancelledAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(rides.id, rideId), eq(rides.status, ride.status)))
+        .returning({ id: rides.id });
+
+      if (updated.length === 0) {
+        res.status(409).json({ error: "Ride state changed concurrently" });
+        return;
+      }
+
+      // Libera o motorista e devolve o cupom ao passageiro
+      if (ride.driverId) {
+        await setDriverAvailability(ride.driverId, true);
+      }
+      try {
+        await releaseRedemptions(rideId);
+      } catch (error) {
+        console.error("Release redemptions error:", error);
+      }
+
+      await recordRideEvent(
+        rideId,
+        cancelStatus,
+        ride.pickupLocationLat,
+        ride.pickupLocationLng,
+        { reason: reason || null, cancelledBy: user.id }
+      );
+
+      await eventPublisher.publishRideCancelled({
+        rideId,
+        cancelledBy:
+          cancelStatus === "CANCELLED_BY_PASSENGER"
+            ? "passenger"
+            : cancelStatus === "CANCELLED_BY_DRIVER"
+              ? "driver"
+              : "system",
+        cancellationReason: reason,
+      });
+
+      res.json({ rideId, status: cancelStatus });
+    } catch (error) {
+      console.error("Cancel ride error:", error);
+      res.status(500).json({ error: "Internal server error" });
     }
-
-    const ride = await db.select().from(rides).where(eq(rides.id, rideId));
-
-    if (ride.length === 0) {
-      return res.status(404).json({ error: "Ride not found" });
-    }
-
-    const currentStatus = ride[0].status;
-    const cancelStatus = cancelledBy === "driver" ? "CANCELLED_BY_DRIVER" : "CANCELLED_BY_PASSENGER";
-    const result = transitionRide(currentStatus, cancelStatus);
-
-    if (!result.success) {
-      return res.status(400).json({ error: result.error });
-    }
-
-    await db.update(rides).set({
-      status: cancelStatus,
-      cancellationReason: reason || null,
-    }).where(eq(rides.id, rideId));
-
-    return res.json({ rideId, status: cancelStatus });
-  } catch (error) {
-    console.error("Cancel ride error:", error);
-    return res.status(500).json({ error: "Internal server error" });
   }
-});
+);
 
-// Get ride history for user
-router.get("/history/:userId", async (req, res) => {
+// Histórico do próprio usuário (como passageiro ou motorista)
+router.get("/history/me", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { userId } = req.params as { userId: string };
+    const user = req.user!;
+    const driver = await getDriverByUserId(user.id);
 
-    const rideHistory = await db.select().from(rides).where(
-      eq(rides.passengerId, userId)
-    ).orderBy(desc(rides.createdAt));
+    const conditions = [eq(rides.passengerId, user.id)];
+    if (driver) {
+      conditions.push(eq(rides.driverId, driver.id));
+    }
 
-    return res.json(rideHistory);
+    const history = await db
+      .select()
+      .from(rides)
+      .where(or(...conditions))
+      .orderBy(desc(rides.createdAt))
+      .limit(100);
+
+    res.json({
+      rides: history.map((ride: Ride) => ({
+        ...ride,
+        totalFare: centsToNumber(ride.finalPassengerPrice),
+        driverCreditAmount: centsToNumber(ride.driverCredit),
+      })),
+    });
   } catch (error) {
     console.error("Get ride history error:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 

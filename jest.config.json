@@ -8,8 +8,16 @@
   "transform": {
     "^.+\\.[t]sx?$": "ts-jest"
   },
-  "moduleFileExtensions": ["ts", "js", "json"],
+  "moduleFileExtensions": [
+    "ts",
+    "js",
+    "json"
+  ],
   "moduleNameMapper": {
-    "^@fairmove/shared-db$": "<rootDir>/packages/shared-db/src/index"
+    "^@fairmove/shared-db$": "<rootDir>/packages/shared-db/src/index",
+    "^@fairmove/shared-types$": "<rootDir>/packages/shared-types/src/index",
+    "^@fairmove/validation$": "<rootDir>/packages/validation/src/index",
+    "^@fairmove/config$": "<rootDir>/packages/config/src/index",
+    "^@fairmove/design-system$": "<rootDir>/packages/design-system/src/index"
   }
 }

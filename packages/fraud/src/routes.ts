@@ -1,12 +1,18 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { db, fraud_events, risk_scores } from "@fairmove/shared-db";
-import { eq } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
+import { requireAuth, requireRole, type AuthUser } from "../../auth/src/middleware";
+import { validateBody, FraudEventSchema } from "@fairmove/validation";
 import { fraudEngine } from "./engine/fraud-engine";
 
 const router = Router();
 
-// Calculate user risk
-router.post("/risk/:userId", async (req, res) => {
+function isSelfOrAdmin(user: AuthUser, userId: string): boolean {
+  return user.role === "admin" || user.id === userId;
+}
+
+/** Calcula (e persiste) o risco do usuário — operação administrativa. */
+router.post("/risk/:userId", requireAuth, requireRole("admin"), async (req: Request, res: Response) => {
   try {
     const { userId } = req.params as { userId: string };
 
@@ -19,40 +25,47 @@ router.post("/risk/:userId", async (req, res) => {
   }
 });
 
-// Register fraud event
-router.post("/event", async (req, res) => {
+/** Registra um evento de fraude — administrativo/sistema (o engine também grava internamente). */
+router.post("/event", requireAuth, requireRole("admin"), validateBody(FraudEventSchema), async (req: Request, res: Response) => {
   try {
-    const { userId, rideId, eventType, riskLevel, score, description, metadata } = req.body;
-
-    if (!userId || !eventType || !riskLevel || score === undefined) {
-      return res.status(400).json({ error: "Missing required fields: userId, eventType, riskLevel, score" });
-    }
+    const { userId, rideId, eventType, riskLevel, score, description, metadata } = req.body as {
+      userId: string;
+      rideId?: string | null;
+      eventType: "device_risk" | "account_risk" | "behavioral_risk";
+      riskLevel: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+      score: number;
+      description: string;
+      metadata?: Record<string, unknown>;
+    };
 
     await fraudEngine.registerEvent(
       userId,
-      rideId,
+      rideId ?? null,
       eventType,
       riskLevel,
       score,
       description,
-      metadata
+      metadata as Record<string, any> | undefined
     );
 
-    return res.json({ message: "Evento de fraude registrado com sucesso" });
+    return res.status(201).json({ message: "Evento de fraude registrado com sucesso" });
   } catch (error) {
     console.error("Register fraud event error:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Get user risk score
-router.get("/score/:userId", async (req, res) => {
+/** Score de risco — o próprio usuário ou admin. */
+router.get("/score/:userId", requireAuth, async (req: Request, res: Response) => {
   try {
     const { userId } = req.params as { userId: string };
+    const user = req.user!;
 
-    const existing = await db.select().from(risk_scores).where(
-      eq(risk_scores.userId, userId)
-    );
+    if (!isSelfOrAdmin(user, userId)) {
+      return res.status(403).json({ error: "You do not have access to this risk score" });
+    }
+
+    const existing = await db.select().from(risk_scores).where(eq(risk_scores.userId, userId));
 
     if (existing.length === 0) {
       return res.json({ hasScore: false });
@@ -65,15 +78,21 @@ router.get("/score/:userId", async (req, res) => {
   }
 });
 
-// Get fraud events for user
-router.get("/events/:userId", async (req, res) => {
+/** Eventos de fraude — o próprio usuário (visibilidade reduzida) ou admin. */
+router.get("/events/:userId", requireAuth, async (req: Request, res: Response) => {
   try {
     const { userId } = req.params as { userId: string };
+    const user = req.user!;
 
-    const { desc } = await import("drizzle-orm");
-    const events = await db.select().from(fraud_events).where(
-      eq(fraud_events.userId, userId)
-    ).orderBy(desc(fraud_events.createdAt));
+    if (!isSelfOrAdmin(user, userId)) {
+      return res.status(403).json({ error: "You do not have access to these events" });
+    }
+
+    const events = await db
+      .select()
+      .from(fraud_events)
+      .where(eq(fraud_events.userId, userId))
+      .orderBy(desc(fraud_events.createdAt));
 
     return res.json(events);
   } catch (error) {
