@@ -1,23 +1,54 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Animated, ScrollView, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
 import { AppText, Button, Card, MonogramWatermark, colors, radius, spacing } from "@fairmove/ui";
 import { formatBRL } from "../../../src/logic/ride-request";
-import {
-  mockDriverProfile,
-  mockWallet,
-  scheduleRideRequest,
-} from "../../../src/services/mock";
+import { completionPercent } from "../../../src/logic/profile";
+import { api, type DriverMeResponse, type RideHistoryItem } from "../../../src/services/api";
+import { useAuth } from "../../../src/auth/AuthProvider";
+
+function isToday(iso: string | null): boolean {
+  if (!iso) return false;
+  const date = new Date(iso);
+  const now = new Date();
+  return (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  );
+}
 
 /**
- * Home do motorista: ficar online/offline (com glow dourado pulsante quando
- * ativo), resumo do dia e integridade do perfil.
- * Mock: 5 s após ficar online chega uma solicitação de corrida (modal global).
+ * Home do motorista — dados REAIS do backend:
+ * - saudação/autenticação via sessão (SecureStore);
+ * - ganhos de hoje e corridas de hoje derivadas do histórico real;
+ * - integridade do perfil calculada do profile persistido.
+ * Sem mocks: sem corridas no banco → R$ 0,00 / 0 corridas.
  */
 export default function DriverHome() {
   const router = useRouter();
+  const { user } = useAuth();
   const [online, setOnline] = useState(false);
+  const [me, setMe] = useState<DriverMeResponse | null>(null);
+  const [rides, setRides] = useState<RideHistoryItem[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const glow = useRef(new Animated.Value(0.25)).current;
+
+  const refresh = useCallback(async () => {
+    try {
+      const [meResponse, rideHistory] = await Promise.all([api.getMe(), api.getRides()]);
+      setMe(meResponse);
+      setRides(rideHistory);
+    } catch {
+      // Sessão inválida já redireciona pelo AuthProvider; aqui fica "sem dados".
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
   // Glow pulsante enquanto estiver online.
   useEffect(() => {
@@ -35,12 +66,13 @@ export default function DriverHome() {
     return () => loop.stop();
   }, [online, glow]);
 
-  // Mock de solicitação: chega 5 segundos após ficar online.
-  useEffect(() => {
-    if (!online) return;
-    const cancel = scheduleRideRequest(() => router.push("/ride-request-modal"));
-    return cancel;
-  }, [online, router]);
+  const todayRides = rides.filter(
+    (ride) => ride.status === "COMPLETED" && isToday(ride.completedAt ?? ride.createdAt)
+  );
+  const todayEarningsCents = todayRides.reduce((sum, ride) => sum + ride.driverCredit, 0);
+  const profilePercent = completionPercent(me?.profile ?? null);
+  const vehicleRegistered = Boolean(me?.driver?.vehicleId);
+  const firstName = (user?.name ?? me?.user.name ?? "").split(" ")[0] || "motorista";
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.container}>
@@ -48,7 +80,7 @@ export default function DriverHome() {
 
       <View style={styles.header}>
         <AppText variant="slogan">100% para você</AppText>
-        <AppText variant="title">Bom trabalho, {mockDriverProfile.name.split(" ")[0]}!</AppText>
+        <AppText variant="title">Bom trabalho, {firstName}!</AppText>
       </View>
 
       <View style={styles.statusWrap}>
@@ -63,7 +95,7 @@ export default function DriverHome() {
           </AppText>
           <AppText variant="caption">
             {online
-              ? "Recebendo solicitações — prepare-se para a próxima corrida."
+              ? "Aguardando solicitações reais de passageiros."
               : "Você não está visível para passageiros."}
           </AppText>
           <Button
@@ -80,7 +112,7 @@ export default function DriverHome() {
         <Card style={styles.flexCard}>
           <AppText variant="caption">GANHOS HOJE</AppText>
           <AppText variant="subtitle" color={colors.gold.DEFAULT}>
-            {formatBRL(mockWallet.todayEarningsCents)}
+            {formatBRL(todayEarningsCents)}
           </AppText>
           <AppText variant="caption">Sem comissão</AppText>
         </Card>
@@ -88,7 +120,7 @@ export default function DriverHome() {
         <Card style={styles.flexCard}>
           <AppText variant="caption">CORRIDAS REALIZADAS</AppText>
           <AppText variant="subtitle" color={colors.ice.DEFAULT}>
-            {mockWallet.todayRidesCount}
+            {todayRides.length}
           </AppText>
           <AppText variant="caption">hoje</AppText>
         </Card>
@@ -99,14 +131,14 @@ export default function DriverHome() {
           INTEGRIDADE DO PERFIL
         </AppText>
         <AppText variant="bodyStrong">
-          Perfil {mockDriverProfile.profileCompletionPercent}% completo
+          {loaded ? `Perfil ${profilePercent}% completo` : "Carregando perfil..."}
         </AppText>
         <AppText variant="caption">
-          {mockDriverProfile.vehicleRegistered
+          {vehicleRegistered
             ? "Documentação em dia — você pode operar normalmente."
             : "Envie CNH e documento do veículo para liberar 100% das corridas."}
         </AppText>
-        {!mockDriverProfile.vehicleRegistered ? (
+        {!vehicleRegistered ? (
           <Button
             title="COMPLETAR CADASTRO"
             variant="ghost"

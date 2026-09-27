@@ -1,7 +1,7 @@
 import React from "react";
 import { act, fireEvent, render } from "@testing-library/react-native";
 import { RideRequestSheet } from "../apps/driver/src/components/RideRequestSheet";
-import { mockRideRequest } from "../apps/driver/src/services/mock";
+import { fixtureRideRequest } from "./fixtures/driver-fixtures";
 
 jest.useFakeTimers();
 
@@ -18,7 +18,7 @@ async function setup(overrides: Partial<Parameters<typeof RideRequestSheet>[0]> 
   const onTimeout = jest.fn();
   const utils = await render(
     <RideRequestSheet
-      request={mockRideRequest}
+      request={fixtureRideRequest}
       onAccept={onAccept}
       onDecline={onDecline}
       onTimeout={onTimeout}
@@ -29,7 +29,7 @@ async function setup(overrides: Partial<Parameters<typeof RideRequestSheet>[0]> 
 }
 
 describe("RideRequestSheet — solicitação de corrida", () => {
-  test("renderiza origem, destino, tempo e distância do mock", async () => {
+  test("renderiza origem, destino, tempo e distância da fixture", async () => {
     const { getByText } = await setup();
 
     expect(getByText("Rua das Palmeiras, 240 — Centro")).toBeTruthy();

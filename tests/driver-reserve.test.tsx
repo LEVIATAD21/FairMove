@@ -6,7 +6,49 @@ import {
   progressPercent,
   reserveProgressLabel,
 } from "../apps/driver/src/logic/reserve";
-import { mockReserve } from "../apps/driver/src/services/mock";
+import { fixtureReserve } from "./fixtures/driver-fixtures";
+
+// A tela consome o RealApiClient (banco real em staging). Nos testes de UI
+// substituímos apenas o transporte pelos mesmos valores do ledger de fixture.
+jest.mock("../apps/driver/src/services/api", () => ({
+  api: {
+    getBalance: jest.fn(async () => ({
+      availableBalance: 12_450,
+      pendingBalance: 0,
+      reserveBalance: 28_700,
+      currency: "BRL",
+    })),
+    getTransactions: jest.fn(async () => [
+      {
+        id: "tx-3",
+        transactionType: "reserve_contribution",
+        amount: 7_000,
+        currency: "BRL",
+        description: "Reserve contribution",
+        status: "completed",
+        created_at: "2026-09-05T12:00:00",
+      },
+      {
+        id: "tx-2",
+        transactionType: "reserve_contribution",
+        amount: 4_900,
+        currency: "BRL",
+        description: "Reserve contribution",
+        status: "completed",
+        created_at: "2026-08-05T12:00:00",
+      },
+      {
+        id: "tx-1",
+        transactionType: "reserve_contribution",
+        amount: 16_800,
+        currency: "BRL",
+        description: "saldo anterior (migração)",
+        status: "completed",
+        created_at: "2026-06-10T12:00:00",
+      },
+    ]),
+  },
+}));
 
 describe("Tela de Reserva — Reserva de Disciplina e Emergência", () => {
   test("renderiza título e a explicação de proteção do valor", async () => {
@@ -20,7 +62,7 @@ describe("Tela de Reserva — Reserva de Disciplina e Emergência", () => {
     ).toBeTruthy();
   });
 
-  test("barra de progresso reflete o saldo do mock (R$ 287 de R$ 1.000)", async () => {
+  test("barra de progresso reflete o saldo real de fixture (R$ 287 de R$ 1.000)", async () => {
     const { getByText } = await render(<DriverReserve />);
 
     expect(getByText("R$ 287 de R$ 1.000 da meta")).toBeTruthy();
@@ -45,7 +87,7 @@ describe("Lógica da Reserva (funções puras)", () => {
   test("progressPercent é limitado a [0, 100]", () => {
     expect(progressPercent(0)).toBe(0);
     expect(progressPercent(-500)).toBe(0);
-    expect(progressPercent(mockReserve.balanceCents, mockReserve.goalCents)).toBe(28.7);
+    expect(progressPercent(fixtureReserve.balanceCents, fixtureReserve.goalCents)).toBe(28.7);
     expect(progressPercent(200_000)).toBe(100);
     expect(progressPercent(100, 0)).toBe(100);
   });
@@ -64,7 +106,7 @@ describe("Lógica da Reserva (funções puras)", () => {
   });
 
   test("soma do histórico confere com o saldo do mock", () => {
-    const total = mockReserve.contributions.reduce((acc, entry) => acc + entry.cents, 0);
-    expect(total).toBe(mockReserve.balanceCents);
+    const total = fixtureReserve.contributions.reduce((acc, entry) => acc + entry.cents, 0);
+    expect(total).toBe(fixtureReserve.balanceCents);
   });
 });

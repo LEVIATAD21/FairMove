@@ -39,6 +39,28 @@ router.post("/:userId/activate", requireAuth, requireSelfOrRole("userId", "admin
   }
 });
 
+// Opt-out da Reserva de Disciplina (irreversível) — próprio usuário
+router.post("/:userId/opt-out", requireAuth, requireSelfOrRole("userId", "admin"), async (req: Request, res: Response) => {
+  try {
+    const { userId } = req.params as { userId: string };
+
+    const result = await subscriptionEngine.optOutOfReserve(userId);
+
+    if (!result.success && result.status === "none") {
+      return res.status(404).json({ error: result.message });
+    }
+    if (!result.success) {
+      // Já aplicado — idempotente para a UI, mas sinaliza o estado real.
+      return res.status(409).json({ error: result.message, optedOutOfReserve: true });
+    }
+
+    return res.json({ optedOutOfReserve: true, subscriptionId: result.subscriptionId });
+  } catch (error) {
+    console.error("Opt-out reserve error:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Cancelar assinatura — próprio usuário
 router.post("/:userId/cancel", requireAuth, requireSelfOrRole("userId", "admin"), async (req: Request, res: Response) => {
   try {

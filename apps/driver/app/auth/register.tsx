@@ -2,19 +2,44 @@ import { useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from "react-native";
 import { Link, useRouter } from "expo-router";
 import { AppText, Button, Input, Monogram, Screen, colors, spacing } from "@fairmove/ui";
+import { useAuth } from "../../src/auth/AuthProvider";
+import { ApiError } from "../../src/services/api";
 
-/** Cadastro do motorista (Fase 1: estrutura; onboarding completo vem depois). */
+/** Cadastro real: POST /api/v1/auth/register → usuário criado no Postgres → app. */
 export default function DriverRegister() {
   const router = useRouter();
+  const { register } = useAuth();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const busy = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
 
-  const onRegister = () => {
-    if (busy.current) return;
-    busy.current = true;
-    router.replace("/driver");
+  const onRegister = async () => {
+    if (busyRef.current) return;
+    if (!name.trim() || !email.trim() || !password) {
+      setError("Preencha nome, e-mail e senha.");
+      return;
+    }
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      await register(name.trim(), email.trim().toLowerCase(), password);
+      router.replace("/driver");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setError("Este e-mail já está cadastrado.");
+      } else if (err instanceof ApiError && err.status === 400) {
+        setError("Senha fraca: use ao menos 8 caracteres com letras e números.");
+      } else {
+        setError("Não foi possível criar a conta agora. Tente novamente.");
+      }
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   };
 
   return (
@@ -59,7 +84,13 @@ export default function DriverRegister() {
             onChangeText={setPassword}
           />
 
-          <Button title="Criar conta" onPress={onRegister} />
+          {error ? (
+            <AppText variant="caption" color={colors.danger}>
+              {error}
+            </AppText>
+          ) : null}
+
+          <Button title={busy ? "CRIANDO CONTA..." : "Criar conta"} onPress={onRegister} />
         </View>
 
         <View style={styles.footer}>

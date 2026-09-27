@@ -94,6 +94,37 @@ export class SubscriptionEngine {
     };
   }
 
+  /**
+   * Opt-out da Reserva de Disciplina — IRREVERSÍVEL por regra de negócio.
+   * Marca `optedOutOfReserve=true`; `calculateMonthlyFee` já lê o campo e
+   * passa a cobrar o fixo integral da plataforma (sem aportes na reserva).
+   */
+  async optOutOfReserve(userId: string): Promise<SubscriptionResult> {
+    const existing = await this.getSubscription(userId);
+    if (!existing) {
+      return { success: false, status: "none", message: "Nenhuma assinatura para este usuário" };
+    }
+    if (existing.optedOutOfReserve) {
+      return {
+        success: false,
+        subscriptionId: existing.id,
+        status: existing.status,
+        message: "Opt-out já aplicado (operação irreversível)",
+      };
+    }
+    await db
+      .update(subscriptions)
+      .set({ optedOutOfReserve: true, updatedAt: new Date() })
+      .where(eq(subscriptions.id, existing.id));
+    return {
+      success: true,
+      subscriptionId: existing.id,
+      status: existing.status,
+      message:
+        "Opt-out aplicado: reserva congelada e mensalidade fixa integralmente para a plataforma (irreversível).",
+    };
+  }
+
   async cancelSubscription(userId: string): Promise<SubscriptionResult> {
     const existing = await this.getSubscription(userId);
 

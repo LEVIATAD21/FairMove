@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { AppText, Card, MonogramWatermark, colors, radius, spacing } from "@fairmove/ui";
 import {
@@ -6,15 +7,58 @@ import {
   progressPercent,
   reserveProgressLabel,
 } from "../../../src/logic/reserve";
-import { mockReserve } from "../../../src/services/mock";
+import { api, type LedgerTransaction, type WalletBalance } from "../../../src/services/api";
+
+const MONTHS_PT = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+
+type Contribution = { cents: number; month: string; year: number; note?: string };
+
+/** Aportes reais: transações do ledger com tipo reserve_contribution. */
+function toContributions(transactions: LedgerTransaction[]): Contribution[] {
+  return transactions
+    .filter((tx) => tx.transactionType === "reserve_contribution")
+    .map((tx) => {
+      const date = new Date(tx.created_at);
+      return {
+        cents: tx.amount,
+        month: MONTHS_PT[date.getMonth()],
+        year: date.getFullYear(),
+        note: tx.description && tx.description !== "Reserve contribution" ? tx.description : undefined,
+      };
+    });
+}
 
 /**
- * Reserva de Disciplina e Emergência — saldo protegido, meta de R$ 1.000 e
- * histórico de aportes mensais. Este valor é do motorista; saque apenas em
- * emergência validada ou no desligamento.
+ * Reserva de Disciplina e Emergência — saldo REAL de `wallets.reserve_balance`
+ * e histórico REAL de aportes no ledger. Banco vazio → R$ 0 da meta e
+ * "sem aportes ainda" (nada de dados inventados).
  */
 export default function DriverReserve() {
-  const percent = progressPercent(mockReserve.balanceCents, mockReserve.goalCents);
+  const [balance, setBalance] = useState<WalletBalance | null>(null);
+  const [contributions, setContributions] = useState<Contribution[]>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [balanceResponse, transactions] = await Promise.all([
+        api.getBalance(),
+        api.getTransactions(),
+      ]);
+      setBalance(balanceResponse);
+      setContributions(toContributions(transactions));
+    } catch {
+      // Sem rede/sessão: mantém zeros — AuthProvider cuida do redirecionamento.
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const balanceCents = balance?.reserveBalance ?? 0;
+  const percent = progressPercent(balanceCents, RESERVE_GOAL_CENTS);
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.container}>
@@ -30,7 +74,7 @@ export default function DriverReserve() {
       <Card variant="gold">
         <AppText variant="caption">SEU PROGRESSO</AppText>
         <AppText variant="display" color={colors.gold.DEFAULT}>
-          {reserveProgressLabel(mockReserve.balanceCents, mockReserve.goalCents)}
+          {loaded ? reserveProgressLabel(balanceCents, RESERVE_GOAL_CENTS) : "—"}
         </AppText>
 
         <View style={styles.progressTrack}>
@@ -47,13 +91,21 @@ export default function DriverReserve() {
         <AppText variant="caption" style={styles.section}>
           HISTÓRICO DE APORTES
         </AppText>
-        {mockReserve.contributions.map((entry) => (
-          <View key={`${entry.month}-${entry.year}`} style={styles.contributionRow}>
-            <AppText variant="bodyStrong" color={colors.success}>
-              {contributionLabel(entry.cents, entry.month, entry.year, entry.note)}
-            </AppText>
-          </View>
-        ))}
+        {contributions.length === 0 ? (
+          <AppText variant="body">
+            {loaded
+              ? "Nenhum aporte ainda — seus aportes mensais aparecerão aqui assim que a reserva começar."
+              : "Carregando aportes..."}
+          </AppText>
+        ) : (
+          contributions.map((entry) => (
+            <View key={`${entry.month}-${entry.year}`} style={styles.contributionRow}>
+              <AppText variant="bodyStrong" color={colors.success}>
+                {contributionLabel(entry.cents, entry.month, entry.year, entry.note)}
+              </AppText>
+            </View>
+          ))
+        )}
         <AppText variant="caption">
           Aportes mensais conforme seu ciclo: R$ 49,00 no mês 2 e R$ 70,00 do mês 3 em diante.
         </AppText>

@@ -1,32 +1,85 @@
-import { useState } from "react";
-import { Modal, ScrollView, StyleSheet, Switch, View } from "react-native";
+import { useCallback, useEffect, useState } from "react";
+import { Alert, Modal, ScrollView, StyleSheet, Switch, View } from "react-native";
+import { useRouter } from "expo-router";
 import { AppText, Button, Card, MonogramWatermark, colors, radius, spacing } from "@fairmove/ui";
 import { formatBRL } from "../../../src/logic/ride-request";
 import { cycleLabel, feeSplitLabel, monthlyFeeLabel } from "../../../src/logic/subscription";
-import { mockCurrentCycle, mockDriverProfile } from "../../../src/services/mock";
+import { completionPercent } from "../../../src/logic/profile";
+import { api, type DriverMeResponse, type SubscriptionResponse } from "../../../src/services/api";
+import { useAuth } from "../../../src/auth/AuthProvider";
 
 /**
- * Perfil do motorista — ciclo do plano progressivo, divisão da taxa e
- * opt-out da Reserva de Disciplina (com modal de confirmação sério).
+ * Perfil do motorista — dados REAIS:
+ * - identidade da sessão (SecureStore) + profile do banco (integridade %);
+ * - assinatura real (GET /subscriptions/:id): sem assinatura → estado vazio
+ *   honesto, sem ciclo/split inventados;
+ * - opt-out da Reserva → POST /subscriptions/:id/opt-out (irreversível);
+ * - logout real (POST /auth/logout + blacklist Redis no servidor).
  */
 export default function DriverProfile() {
-  const [optedOut, setOptedOut] = useState(mockDriverProfile.optedOutOfReserve);
+  const router = useRouter();
+  const { user, logout } = useAuth();
+  const [me, setMe] = useState<DriverMeResponse | null>(null);
+  const [subscription, setSubscription] = useState<SubscriptionResponse | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  const monthsActive = mockCurrentCycle();
+  const refresh = useCallback(async () => {
+    try {
+      const [meResponse, sub] = await Promise.all([api.getMe(), api.getSubscription()]);
+      setMe(meResponse);
+      setSubscription(sub);
+    } catch {
+      // Sessão inválida → AuthProvider redireciona; tela fica com dados vazios.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const activeSub =
+    subscription && subscription.hasSubscription ? subscription.subscription : null;
+  const optedOut = activeSub?.optedOutOfReserve ?? false;
+  const cycle = activeSub?.currentBillingCycle ?? 0;
+  const profilePercent = completionPercent(me?.profile ?? null);
 
   const handleToggle = (value: boolean) => {
     if (value) {
-      // Ativar opt-out exige confirmação explícita.
       setConfirmOpen(true);
-    } else {
-      setOptedOut(false);
+      return;
+    }
+    // Opt-out é irreversível por regra de negócio — não há "voltar".
+  };
+
+  const confirmOptOut = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.optOutReserve();
+      await refresh();
+      setConfirmOpen(false);
+    } catch (error) {
+      Alert.alert(
+        "Não foi possível sair",
+        error instanceof Error && error.message.includes("HTTP")
+          ? "O servidor recusou a operação. Tente novamente."
+          : "Verifique sua conexão e tente novamente."
+      );
+    } finally {
+      setBusy(false);
     }
   };
 
-  const confirmOptOut = () => {
-    setOptedOut(true);
-    setConfirmOpen(false);
+  const onLogout = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await logout();
+      router.replace("/auth/login");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -35,12 +88,12 @@ export default function DriverProfile() {
       <AppText variant="title">Perfil</AppText>
 
       <Card>
-        <AppText variant="subtitle">{mockDriverProfile.name}</AppText>
+        <AppText variant="subtitle">{user?.name ?? "—"}</AppText>
         <AppText variant="body" color={colors.ice.muted}>
-          {mockDriverProfile.email}
+          {user?.email ?? "—"}
         </AppText>
         <AppText variant="caption" style={styles.status}>
-          {`Status: offline · Perfil ${mockDriverProfile.profileCompletionPercent}% completo`}
+          {`Status: offline · Perfil ${profilePercent}% completo`}
         </AppText>
       </Card>
 
@@ -48,16 +101,29 @@ export default function DriverProfile() {
         <AppText variant="caption" color={colors.gold.DEFAULT}>
           SEU CICLO ATUAL
         </AppText>
-        <AppText variant="subtitle">{cycleLabel(monthsActive)}</AppText>
-        <AppText variant="bodyStrong" style={styles.split}>
-          {feeSplitLabel(monthsActive, optedOut)}
-        </AppText>
-        <AppText variant="caption">{monthlyFeeLabel(monthsActive, optedOut)}</AppText>
-        <AppText variant="caption">
-          {optedOut
-            ? "Opt-out ativo: taxa fixa integralmente para a plataforma, sem aportes na reserva."
-            : "A reserva é um direito seu — este valor continua protegido e nunca sai da conta."}
-        </AppText>
+        {activeSub ? (
+          <>
+            <AppText variant="subtitle">{cycleLabel(cycle)}</AppText>
+            <AppText variant="bodyStrong" style={styles.split}>
+              {feeSplitLabel(cycle, optedOut)}
+            </AppText>
+            <AppText variant="caption">{monthlyFeeLabel(cycle, optedOut)}</AppText>
+            <AppText variant="caption">
+              {optedOut
+                ? "Opt-out ativo: taxa fixa integralmente para a plataforma, sem aportes na reserva."
+                : "A reserva é um direito seu — este valor continua protegido e nunca sai da conta."}
+            </AppText>
+          </>
+        ) : (
+          <>
+            <AppText variant="subtitle">Sem assinatura ativa</AppText>
+            <AppText variant="caption">
+              {subscription
+                ? "Seu ciclo começa quando o cadastro do motorista for aprovado."
+                : "Não foi possível consultar a assinatura agora."}
+            </AppText>
+          </>
+        )}
       </Card>
 
       <Card>
@@ -65,11 +131,14 @@ export default function DriverProfile() {
           <View style={styles.toggleInfo}>
             <AppText variant="bodyStrong">Sair do plano de reserva</AppText>
             <AppText variant="caption">
-              Deseja sair do plano de reserva e pagar {formatBRL(15_000)} fixos?
+              {activeSub
+                ? `Deseja sair do plano de reserva e pagar ${formatBRL(15_000)} fixos?`
+                : "Disponível assim que sua assinatura estiver ativa."}
             </AppText>
           </View>
           <Switch
             value={optedOut}
+            disabled={!activeSub || optedOut}
             onValueChange={handleToggle}
             trackColor={{ false: colors.graphite.raised, true: colors.gold.dark }}
             thumbColor={optedOut ? colors.gold.DEFAULT : colors.graphite.line}
@@ -87,7 +156,18 @@ export default function DriverProfile() {
         <AppText variant="body">• Reserva de Disciplina e Emergência transparente</AppText>
       </Card>
 
-      <Modal visible={confirmOpen} transparent animationType="fade" onRequestClose={() => setConfirmOpen(false)}>
+      <Button
+        title={busy ? "AGUARDE..." : "SAIR DA CONTA"}
+        variant="secondary"
+        onPress={onLogout}
+      />
+
+      <Modal
+        visible={confirmOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setConfirmOpen(false)}
+      >
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <AppText variant="title" color={colors.danger}>
@@ -98,15 +178,19 @@ export default function DriverProfile() {
               <AppText variant="bodyStrong" color={colors.danger}>
                 congelada permanentemente
               </AppText>
-              : os {formatBRL(28_700)} já acumulados ficam retidos até uma emergência validada ou o
-              seu desligamento, e nenhum novo aporte será feito.
+              : o valor já acumulado fica retido até uma emergência validada ou o seu
+              desligamento, e nenhum novo aporte será feito.
             </AppText>
             <AppText variant="body">
               Sua taxa mensal passa a ser fixa de {formatBRL(15_000)}, integralmente para a
               plataforma — esta mudança é permanente e não pode ser desfeita.
             </AppText>
             <Button title="CONFIRMAR SAÍDA" variant="danger" onPress={confirmOptOut} />
-            <Button title="MANTER NA RESERVA" variant="secondary" onPress={() => setConfirmOpen(false)} />
+            <Button
+              title="MANTER NA RESERVA"
+              variant="secondary"
+              onPress={() => setConfirmOpen(false)}
+            />
           </View>
         </View>
       </Modal>

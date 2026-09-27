@@ -2,18 +2,43 @@ import { useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from "react-native";
 import { Link, useRouter } from "expo-router";
 import { AppText, Button, Input, Monogram, Screen, colors, spacing } from "@fairmove/ui";
+import { useAuth } from "../../src/auth/AuthProvider";
+import { ApiError } from "../../src/services/api";
 
-/** Login do motorista (Fase 1: estrutura + navegação anti duplo clique). */
+/** Login real: POST /api/v1/auth/login → tokens no SecureStore → app autenticado. */
 export default function DriverLogin() {
   const router = useRouter();
+  const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const busy = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
 
-  const onLogin = () => {
-    if (busy.current) return;
-    busy.current = true;
-    router.replace("/driver");
+  const onLogin = async () => {
+    if (busyRef.current) return;
+    if (!email.trim() || !password) {
+      setError("Informe e-mail e senha.");
+      return;
+    }
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      await login(email.trim().toLowerCase(), password);
+      router.replace("/driver");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        setError("E-mail ou senha incorretos.");
+      } else if (err instanceof ApiError && err.status === 429) {
+        setError("Muitas tentativas. Aguarde alguns minutos.");
+      } else {
+        setError("Não foi possível conectar ao servidor. Verifique sua rede.");
+      }
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   };
 
   return (
@@ -51,7 +76,13 @@ export default function DriverLogin() {
             onChangeText={setPassword}
           />
 
-          <Button title="Entrar" onPress={onLogin} />
+          {error ? (
+            <AppText variant="caption" color={colors.danger}>
+              {error}
+            </AppText>
+          ) : null}
+
+          <Button title={busy ? "ENTRANDO..." : "Entrar"} onPress={onLogin} />
         </View>
 
         <View style={styles.footer}>
