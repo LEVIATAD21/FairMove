@@ -57,6 +57,31 @@ router.get("/me", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+// Saldo resumido (alias da spec: GET /api/v1/wallets/me/balance)
+router.get("/me/balance", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const wallet = await walletEngine.ensureWallet(req.user!.id);
+    res.json(walletResponse(wallet));
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+// Depósito — NÃO simula pagamento: sem gateway real configurado, 501 com docs.
+router.post("/deposit", (_req: Request, res: Response) => {
+  res.status(501).json({
+    error: "payment_gateway_not_configured",
+    message:
+      "POST /api/v1/wallets/deposit exige um gateway de pagamento real (PIX via Pagar.me, Stripe ou similar). Enquanto não houver credenciais, o endpoint não credita saldo.",
+    docs: {
+      manual_credit:
+        "Crédito manual (backoffice): POST /api/v1/wallets/:userId/credit — requer role=admin, passa pelo ledger de dupla entrada e aceita idempotencyKey.",
+      required_env: ["PAGARME_API_KEY ou STRIPE_SECRET_KEY"],
+      no_fake_data: "Nenhum saldo é criado por este endpoint sem liquidação real.",
+    },
+  });
+});
+
 // Carteira de um usuário específico (próprio usuário ou admin)
 router.get("/:userId", requireAuth, requireSelfOrRole("userId", "admin"), async (req, res) => {
   try {

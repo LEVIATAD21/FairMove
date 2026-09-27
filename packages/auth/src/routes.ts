@@ -14,6 +14,10 @@ import {
 } from "@fairmove/validation";
 import { hashPassword, comparePassword } from "./utils/password";
 import {
+  blacklistRefreshSession,
+  isRefreshSessionBlacklisted,
+} from "./utils/blacklist";
+import {
   requireAuth,
   getJwtSecret,
   getRefreshTokenSecret,
@@ -22,12 +26,13 @@ import {
 
 const router = Router();
 
+/** Spec de produção: access 15min (curto p/ mobile), refresh 7d. */
 function accessTokenTtl(): string {
-  return process.env.JWT_EXPIRES_IN || "1d";
+  return process.env.JWT_EXPIRES_IN || "15m";
 }
 
 function refreshTokenTtl(): string {
-  return process.env.REFRESH_TOKEN_EXPIRES_IN || "30d";
+  return process.env.REFRESH_TOKEN_EXPIRES_IN || "7d";
 }
 
 /** ms de uma duração tipo "15m"/"30d"/"1d" — usada para alinhar a sessão. */
@@ -158,7 +163,7 @@ router.post("/login", validateBody(LoginSchema), async (req: Request, res: Respo
 });
 
 // Refresh token (com rotação: o refresh antigo é invalidado)
-router.post("/refresh-token", async (req: Request, res: Response) => {
+async function refreshHandler(req: Request, res: Response): Promise<void> {
   try {
     const { refreshToken } = req.body ?? {};
 
@@ -184,6 +189,12 @@ router.post("/refresh-token", async (req: Request, res: Response) => {
 
     if (payload.type !== "refresh" || !payload.sessionId || !payload.userId) {
       res.status(401).json({ error: "Invalid refresh token" });
+      return;
+    }
+
+    // Blacklist Redis (camada extra; a sessão removida do banco já invalida).
+    if (await isRefreshSessionBlacklisted(payload.sessionId)) {
+      res.status(401).json({ error: "Refresh token revoked" });
       return;
     }
 
@@ -222,7 +233,11 @@ router.post("/refresh-token", async (req: Request, res: Response) => {
     console.error("Refresh token error:", error);
     res.status(401).json({ error: "Invalid refresh token" });
   }
-});
+}
+
+// Aliases: nomenclatura da spec (/refresh) e a clássica (/refresh-token)
+router.post("/refresh-token", refreshHandler);
+router.post("/refresh", refreshHandler);
 
 // Verify token
 router.get("/verify", requireAuth, async (req: Request, res: Response) => {
@@ -244,10 +259,14 @@ router.get("/verify", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
-// Logout (revoga a sessão atual)
+// Logout (revoga a sessão no banco + blacklist do refresh token no Redis)
 router.post("/logout", requireAuth, async (req: Request, res: Response) => {
   try {
     await db.delete(sessions).where(eq(sessions.id, req.user!.sessionId));
+    await blacklistRefreshSession(
+      req.user!.sessionId,
+      Math.floor(ttlToMs(refreshTokenTtl()) / 1000)
+    );
     res.status(204).send();
   } catch (error) {
     console.error("Logout error:", error);

@@ -163,6 +163,24 @@ app.use("/api/fraud", fraudRouter);
 app.use("/api/subscriptions", subscriptionRouter);
 app.use("/api/events", eventsRouter);
 
+// Aliases v1 (spec da API pública). Mesmos handlers, contrato versionado —
+// /api/* continua válido para compatibilidade.
+app.use("/api/v1/auth", authLimiter, authRouter);
+app.use("/api/v1/users", usersRouter);
+// GET /api/v1/drivers/me (spec) → mesmo handler de GET /users/me
+app.use("/api/v1/drivers", usersRouter);
+app.use("/api/v1/rides", rideRouter);
+app.use("/api/v1/matching", matchingRouter);
+app.use("/api/v1/pricing", pricingRouter);
+app.use("/api/v1/promotions", promotionRouter);
+app.use("/api/v1/payments", paymentRouter);
+app.use("/api/v1/wallets", walletRouter);
+app.use("/api/v1/reserves", reserveRouter);
+app.use("/api/v1/safety", safetyRouter);
+app.use("/api/v1/fraud", fraudRouter);
+app.use("/api/v1/subscriptions", subscriptionRouter);
+app.use("/api/v1/events", eventsRouter);
+
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
 });
