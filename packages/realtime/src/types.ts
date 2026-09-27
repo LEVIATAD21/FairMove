@@ -5,6 +5,7 @@ export type RideEventType =
   | "RideStarted"
   | "RideCompleted"
   | "RideCancelled"
+  | "RideStatusChanged"
   | "PaymentAuthorized"
   | "PaymentCaptured"
   | "DriverCredited"
@@ -62,13 +63,23 @@ export interface RideCancelledEvent extends RideEventBase {
   cancellationReason?: string;
 }
 
+export interface RideStatusChangedEvent extends RideEventBase {
+  eventType: "RideStatusChanged";
+  rideId: string;
+  status: string;
+  from?: string;
+  passengerId?: string;
+  driverId?: string | null;
+}
+
 export type RideEvent =
   | RideRequestedEvent
   | DriverMatchedEvent
   | DriverArrivedEvent
   | RideStartedEvent
   | RideCompletedEvent
-  | RideCancelledEvent;
+  | RideCancelledEvent
+  | RideStatusChangedEvent;
 
 export interface RealtimeConfig {
   redisUrl: string;

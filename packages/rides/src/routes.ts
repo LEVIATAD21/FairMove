@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { db, rides, rideLocationEvents, users, drivers, risk_scores, type Ride } from "@fairmove/shared-db";
+import { db, rides, rideLocationEvents, users, drivers, vehicles, risk_scores, type Ride } from "@fairmove/shared-db";
 import { eq, and, or, desc, sql } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { requireAuth, type AuthUser } from "../../auth/src/middleware";
@@ -265,11 +265,20 @@ router.post("/:rideId/accept", requireAuth, async (req: Request, res: Response) 
       { driverId: driver.id }
     );
 
+    let vehiclePlate = "";
+    if (driver.vehicleId) {
+      const vehicleRows = await db
+        .select({ plate: vehicles.plate })
+        .from(vehicles)
+        .where(eq(vehicles.id, driver.vehicleId));
+      vehiclePlate = vehicleRows[0]?.plate ?? "";
+    }
+
     await eventPublisher.publishDriverMatched({
       rideId,
       driverId: driver.id,
       driverName: (await db.select({ name: users.name }).from(users).where(eq(users.id, user.id)))[0]?.name ?? "",
-      vehiclePlate: "",
+      vehiclePlate,
     });
 
     res.json({ rideId, status: "DRIVER_ASSIGNED", driverId: driver.id });
@@ -332,10 +341,18 @@ router.patch(
         return;
       }
 
-      await recordRideEvent(rideId, status, ride.pickupLocationLat, ride.pickupLocationLng, {
-        from: ride.status,
-        to: status,
-      });
+    await recordRideEvent(rideId, status, ride.pickupLocationLat, ride.pickupLocationLng, {
+      from: ride.status,
+      to: status,
+    });
+
+    await eventPublisher.publishRideStatusChanged({
+      rideId,
+      status,
+      from: ride.status,
+      passengerId: ride.passengerId,
+      driverId: ride.driverId,
+    });
 
       if (status === "DRIVER_ARRIVING") {
         await eventPublisher.publishDriverArrived({

@@ -9,7 +9,7 @@ import {
 } from "./session";
 
 /**
- * RealApiClient do motorista — 100% HTTP real contra o backend FairMove.
+ * RealApiClient do passageiro — 100% HTTP real contra o backend FairMove.
  *
  * - Base: EXPO_PUBLIC_API_URL (LAN/ngrok/emulador) com fallback localhost.
  * - Bearer token em toda rota autenticada.
@@ -126,14 +126,12 @@ async function doRefresh(): Promise<string | null> {
       true
     );
     await saveAccessToken(result.token);
-    // Rotação: o servidor também emite novo refresh — persiste o par novo.
     const user = getSessionUser();
     if (user) {
       await saveSession({ accessToken: result.token, refreshToken: result.refreshToken }, user);
     }
     return result.token;
   } catch {
-    // Refresh inválido/revogado: derruba a sessão de verdade.
     await clearSession();
     emitSessionLost();
     return null;
@@ -146,10 +144,9 @@ export type LoginResponse = {
   refreshToken: string;
 };
 
-export type DriverMeResponse = {
+export type UserMeResponse = {
   user: SessionUser;
   profile: Record<string, unknown> | null;
-  driver: Record<string, unknown> | null;
 };
 
 export type WalletBalance = {
@@ -172,30 +169,38 @@ export type LedgerTransaction = {
 export type RideHistoryItem = {
   id: string;
   status: string;
-  driverCredit: number;
-  finalPassengerPrice: number;
+  totalFare: number;
+  driverCreditAmount?: number;
   createdAt: string;
   completedAt: string | null;
   pickupLocationLat: string | null;
   pickupLocationLng: string | null;
   dropoffLocationLat: string | null;
   dropoffLocationLng: string | null;
+  cancellationReason?: string | null;
 };
 
-export type SubscriptionResponse =
-  | { hasSubscription: false; status: string }
-  | {
-      hasSubscription: true;
-      subscription: {
-        status: string;
-        startedAt: string;
-        subscriptionStartedAt: string | null;
-        currentBillingCycle: number;
-        optedOutOfReserve: boolean;
-        cancelAt: boolean;
-        currentPeriodEnd: string | null;
-      };
-    };
+export type QuoteResponse = {
+  quoteId: string;
+  originalPrice: number;
+  promotionDiscount: number;
+  passengerPrice: number;
+  driverCredit: number;
+  distanceKm: number;
+  timeMinutes: number;
+  currency: string;
+};
+
+export type CreateRideResponse = {
+  rideId: string;
+  status: string;
+  distanceKm: number;
+  estimatedTimeSeconds: number;
+  originalPrice: number;
+  promotionDiscount: number;
+  totalFare: number;
+  currency: string;
+};
 
 export const api = {
   async login(email: string, password: string): Promise<SessionUser> {
@@ -232,8 +237,8 @@ export const api = {
     }
   },
 
-  getMe(): Promise<DriverMeResponse> {
-    return request<DriverMeResponse>("/drivers/me");
+  getMe(): Promise<UserMeResponse> {
+    return request<UserMeResponse>("/users/me");
   },
 
   getBalance(): Promise<WalletBalance> {
@@ -254,32 +259,30 @@ export const api = {
     return data.rides;
   },
 
-  async getSubscription(): Promise<SubscriptionResponse> {
-    const user = getSessionUser();
-    if (!user) return { hasSubscription: false, status: "none" };
-    return request<SubscriptionResponse>(`/subscriptions/${user.id}`);
+  /** Orçamento real do pricing engine (persistido para auditoria). */
+  quote(input: {
+    pickupLocationLat: number;
+    pickupLocationLng: number;
+    dropoffLocationLat: number;
+    dropoffLocationLng: number;
+  }): Promise<QuoteResponse> {
+    return request<QuoteResponse>("/pricing/quote", { method: "POST", body: input });
   },
 
-  optOutReserve(): Promise<{ optedOutOfReserve: boolean }> {
-    const user = getSessionUser();
-    if (!user) return Promise.reject(new ApiError(401, { error: "no_session" }));
-    return request<{ optedOutOfReserve: boolean }>(
-      `/subscriptions/${user.id}/opt-out`,
-      { method: "POST" }
-    );
+  /** Pedido real de corrida (REQUESTED → busca motorista via Redis/PostGIS). */
+  createRide(input: {
+    pickupLocationLat: number;
+    pickupLocationLng: number;
+    dropoffLocationLat: number;
+    dropoffLocationLng: number;
+  }): Promise<CreateRideResponse> {
+    return request<CreateRideResponse>("/rides", { method: "POST", body: input });
   },
 
-  /** Status REAL do motorista no matching (online/offline/on_trip). */
-  setDriverStatus(status: "online" | "offline" | "on_trip"): Promise<{
-    driverId: string;
-    status: string;
-    available: boolean;
-  }> {
-    return request(`/matching/driver/status`, { method: "POST", body: { status } });
-  },
-
-  /** Aceita a oferta de corrida (POST /rides/:id/accept). */
-  acceptRide(rideId: string): Promise<{ ride?: RideHistoryItem; status?: string }> {
-    return request(`/rides/${rideId}/accept`, { method: "POST" });
+  cancelRide(rideId: string, reason: string): Promise<unknown> {
+    return request(`/rides/${rideId}/cancel`, {
+      method: "POST",
+      body: { reason },
+    });
   },
 };

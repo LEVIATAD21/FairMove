@@ -15,7 +15,9 @@
         "^@fairmove/shared-types$": "<rootDir>/packages/shared-types/src/index",
         "^@fairmove/validation$": "<rootDir>/packages/validation/src/index",
         "^@fairmove/config$": "<rootDir>/packages/config/src/index",
-        "^@fairmove/ui$": "<rootDir>/packages/ui/src/index"
+        "^@fairmove/ui$": "<rootDir>/packages/ui/src/index",
+        "^expo-secure-store$": "<rootDir>/tests/mocks/expo-secure-store.ts",
+        "^expo-location$": "<rootDir>/tests/mocks/expo-location.ts"
       }
     },
     {
@@ -28,7 +30,9 @@
         "^@fairmove/shared-types$": "<rootDir>/packages/shared-types/src/index",
         "^@fairmove/validation$": "<rootDir>/packages/validation/src/index",
         "^@fairmove/config$": "<rootDir>/packages/config/src/index",
-        "^@fairmove/ui$": "<rootDir>/packages/ui/src/index"
+        "^@fairmove/ui$": "<rootDir>/packages/ui/src/index",
+        "^expo-secure-store$": "<rootDir>/tests/mocks/expo-secure-store.ts",
+        "^expo-location$": "<rootDir>/tests/mocks/expo-location.ts"
       }
     }
   ]

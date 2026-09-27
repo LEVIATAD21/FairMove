@@ -16,6 +16,10 @@ export interface RideRequestSheetProps {
   onTimeout: () => void;
   /** Janela de decisão em segundos (padrão 15). */
   countdownSeconds?: number;
+  /** true enquanto o POST /accept está em voo (trava o botão ACEITAR). */
+  acceptDisabled?: boolean;
+  /** Mensagem de erro do aceite real (ex.: corrida já assumida). */
+  acceptHint?: string | null;
 }
 
 /**
@@ -30,6 +34,8 @@ export function RideRequestSheet({
   onDecline,
   onTimeout,
   countdownSeconds = RIDE_REQUEST_COUNTDOWN_SECONDS,
+  acceptDisabled = false,
+  acceptHint = null,
 }: RideRequestSheetProps) {
   const [remaining, setRemaining] = useState(countdownSeconds);
   const [decision, setDecision] = useState<"accept" | "decline" | null>(null);
@@ -56,7 +62,7 @@ export function RideRequestSheet({
     else onDecline();
   };
 
-  const disabled = decision !== null || remaining <= 0;
+  const disabled = decision !== null || remaining <= 0 || acceptDisabled;
 
   return (
     <View style={styles.overlay} accessibilityViewIsModal>
@@ -94,8 +100,13 @@ export function RideRequestSheet({
           {countdownLabel(remaining)}
         </AppText>
 
+        {acceptHint ? (
+          <AppText variant="caption" align="center" color={colors.danger}>
+            {acceptHint}
+          </AppText>
+        ) : null}
         <Button
-          title="ACEITAR"
+          title={acceptDisabled ? "ACEITANDO..." : "ACEITAR"}
           variant="primary"
           onPress={() => settle("accept")}
           disabled={disabled}

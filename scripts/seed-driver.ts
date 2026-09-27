@@ -14,7 +14,7 @@
  */
 import "dotenv/config";
 import { eq } from "drizzle-orm";
-import { db, users, profiles, drivers } from "@fairmove/shared-db";
+import { db, users, profiles, drivers, vehicles } from "@fairmove/shared-db";
 import { hashPassword } from "../packages/auth/src/utils/password";
 import { subscriptionEngine } from "../packages/subscriptions/src/engine/subscription-engine";
 import { walletEngine } from "../packages/wallets/src/engine/wallet-engine";
@@ -95,7 +95,21 @@ async function ensureDriverRow(userId: string): Promise<{ id: string; created: b
     .where(eq(drivers.userId, userId));
 
   if (existing.length > 0) {
-    return { id: existing[0].id, created: false };
+    const id = existing[0].id;
+    // Estado base conhecido do ambiente de teste: uma corrida aceitada e
+    // abandonada deixa available=false; o seed sempre devolve o motorista
+    // ao estado online/disponível em casa.
+    await db
+      .update(drivers)
+      .set({
+        status: "online",
+        available: true,
+        currentLocationLat: DRIVER_HOME_LAT,
+        currentLocationLng: DRIVER_HOME_LNG,
+        updatedAt: new Date(),
+      })
+      .where(eq(drivers.id, id));
+    return { id, created: false };
   }
 
   const inserted = await db
@@ -109,6 +123,43 @@ async function ensureDriverRow(userId: string): Promise<{ id: string; created: b
     })
     .returning({ id: drivers.id });
   return { id: inserted[0].id, created: true };
+}
+
+/** Veículo real do motorista — obrigatório para o matching (PostGIS nearby). */
+async function ensureVehicle(driverRowId: string): Promise<{ created: boolean }> {
+  const existing = await db
+    .select({ id: vehicles.id, vehicleType: vehicles.vehicleType })
+    .from(vehicles)
+    .where(eq(vehicles.driverId, driverRowId));
+
+  let vehicleId: string;
+  if (existing.length === 0) {
+    const inserted = await db
+      .insert(vehicles)
+      .values({
+        driverId: driverRowId,
+        brand: "Fiat",
+        model: "Argo",
+        year: 2020,
+        color: "Branco",
+        plate: "FMOV0001",
+        vehicleType: "car",
+      })
+      .returning({ id: vehicles.id });
+    vehicleId = inserted[0].id;
+  } else {
+    vehicleId = existing[0].id;
+  }
+
+  const row = await db
+    .select({ vehicleId: drivers.vehicleId })
+    .from(drivers)
+    .where(eq(drivers.id, driverRowId));
+  if (row[0]?.vehicleId !== vehicleId) {
+    await db.update(drivers).set({ vehicleId }).where(eq(drivers.id, driverRowId));
+  }
+
+  return { created: existing.length === 0 };
 }
 
 async function main(): Promise<void> {
@@ -133,6 +184,12 @@ async function main(): Promise<void> {
     driverRow.id,
     DRIVER_HOME_LAT,
     DRIVER_HOME_LNG
+  );
+
+  const vehicle = await ensureVehicle(driverRow.id);
+  console.log(
+    "[seed-driver] vehicles: %s (Fiat Argo 2020, placa FMOV0001, car)",
+    vehicle.created ? "CRIADO" : "EXISTENTE"
   );
 
   await walletEngine.ensureWallet(driver.id);

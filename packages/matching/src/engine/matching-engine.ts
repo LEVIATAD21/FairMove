@@ -1,6 +1,5 @@
 import { db, drivers, vehicles, users } from "@fairmove/shared-db";
 import { eq, and, sql } from "drizzle-orm";
-import { haversineKm, isValidLatitude, isValidLongitude } from "@fairmove/shared-types";
 
 export interface DriverMatch {
   driverId: string;
@@ -26,14 +25,21 @@ export interface NearbyDriver extends DriverMatch {
 
 export const DEFAULT_MAX_DISTANCE_KM = 10;
 
-/** Distância em km entre dois pontos (Haversine). */
-export function calculateDistance(
-  lat1: number,
-  lng1: number,
-  lat2: number,
-  lng2: number
-): number {
-  return haversineKm({ lat: lat1, lng: lng1 }, { lat: lat2, lng: lng2 });
+/** Point geography (WGS84) — base de todas as métricas do matching. */
+function pointGeography(lng: number, lat: number) {
+  return sql`ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography`;
+}
+
+/**
+ * Localização do motorista como point geography.
+ * O CASE garante cast seguro: coordenada inválida vira NULL e a linha é
+ * descartada pela predicate ST_DWithin (NULL nunca satisfaz WHERE).
+ */
+function driverPointGeography() {
+  return sql`ST_SetSRID(ST_MakePoint(
+    CASE WHEN ${drivers.currentLocationLng} ~ '^-?[0-9]+(\.[0-9]+)?$' THEN ${drivers.currentLocationLng}::float8 ELSE NULL END,
+    CASE WHEN ${drivers.currentLocationLat} ~ '^-?[0-9]+(\.[0-9]+)?$' THEN ${drivers.currentLocationLat}::float8 ELSE NULL END
+  ), 4326)::geography`;
 }
 
 interface DriverCandidate {
@@ -43,31 +49,21 @@ interface DriverCandidate {
 }
 
 /**
- * Motorista elegível: online, disponível, com localização conhecida,
- * veículo compatível e dentro do raio de busca.
+ * Motorista elegível: online, disponível, veículo compatível e dentro do
+ * raio de busca (distância medida pelo PostGIS, não por JS).
  */
 function buildCandidate(
   candidate: DriverCandidate,
-  passengerLat: number,
-  passengerLng: number,
-  vehicleType: "car" | "motorcycle" | undefined,
-  maxDistanceKm: number
+  distanceMeters: number,
+  vehicleType: "car" | "motorcycle" | undefined
 ): NearbyDriver | null {
   const { driver, vehicle, user } = candidate;
 
   if (!vehicle) return null;
   if (vehicleType && vehicle.vehicleType !== vehicleType) return null;
-  if (!isValidLatitude(Number(driver.currentLocationLat))) return null;
-  if (!isValidLongitude(Number(driver.currentLocationLng))) return null;
+  if (!Number.isFinite(distanceMeters)) return null;
 
-  const distance = calculateDistance(
-    passengerLat,
-    passengerLng,
-    Number(driver.currentLocationLat),
-    Number(driver.currentLocationLng)
-  );
-
-  if (!Number.isFinite(distance) || distance > maxDistanceKm) return null;
+  const distanceKm = distanceMeters / 1000;
 
   return {
     driverId: driver.id,
@@ -76,37 +72,62 @@ function buildCandidate(
     vehicleId: vehicle.id,
     vehiclePlate: vehicle.plate,
     vehicleType: vehicle.vehicleType,
-    distance: Math.round(distance * 100) / 100,
-    estimatedTime: Math.max(1, Math.round(distance * 2)),
+    distance: Math.round(distanceKm * 100) / 100,
+    estimatedTime: Math.max(1, Math.round(distanceKm * 2)),
     direction: "approaching",
     status: driver.status,
   };
 }
 
-/** Lista motoristas próximos, ordenados pela distância. */
+/**
+ * Lista motoristas próximos, ordenados pela distância.
+ * Matching geoespacial 100% no PostGIS: ST_DWithin no filtro (com índice)
+ * e ST_DDistance na ordenação, em geography (metros, elipsoidal WGS84).
+ */
 export async function findNearbyDrivers(
   passengerLat: number,
   passengerLng: number,
   vehicleType?: "car" | "motorcycle",
   maxDistanceKm: number = DEFAULT_MAX_DISTANCE_KM
 ): Promise<NearbyDriver[]> {
-  if (!isValidLatitude(passengerLat) || !isValidLongitude(passengerLng)) {
+  if (
+    !Number.isFinite(passengerLat) ||
+    !Number.isFinite(passengerLng) ||
+    passengerLat < -90 ||
+    passengerLat > 90 ||
+    passengerLng < -180 ||
+    passengerLng > 180
+  ) {
     return [];
   }
 
+  const radiusMeters = maxDistanceKm * 1000;
+  const pickup = pointGeography(passengerLng, passengerLat);
+
   const rows = await db
-    .select({ driver: drivers, vehicle: vehicles, user: users })
+    .select({
+      driver: drivers,
+      vehicle: vehicles,
+      user: users,
+      distanceMeters: sql<string | null>`ST_Distance(${driverPointGeography()}, ${pickup})`,
+    })
     .from(drivers)
     .leftJoin(vehicles, eq(drivers.vehicleId, vehicles.id))
     .leftJoin(users, eq(drivers.userId, users.id))
-    .where(and(eq(drivers.status, "online"), eq(drivers.available, true)));
+    .where(
+      and(
+        eq(drivers.status, "online"),
+        eq(drivers.available, true),
+        sql`ST_DWithin(${driverPointGeography()}, ${pickup}, ${radiusMeters})`
+      )
+    )
+    .orderBy(sql`ST_Distance(${driverPointGeography()}, ${pickup})`);
 
   const matches = rows
-    .map((row: DriverCandidate) =>
-      buildCandidate(row, passengerLat, passengerLng, vehicleType, maxDistanceKm)
+    .map((row: DriverCandidate & { distanceMeters: string | null }) =>
+      buildCandidate(row, Number(row.distanceMeters), vehicleType)
     )
-    .filter((m: NearbyDriver | null): m is NearbyDriver => m !== null)
-    .sort((a: NearbyDriver, b: NearbyDriver) => a.distance - b.distance);
+    .filter((m: NearbyDriver | null): m is NearbyDriver => m !== null);
 
   return matches;
 }

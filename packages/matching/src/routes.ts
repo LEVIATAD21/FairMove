@@ -150,7 +150,7 @@ router.post(
         return;
       }
 
-      const patch: Record<string, unknown> = { status, updated_at: new Date() };
+      const patch: Record<string, unknown> = { status, updatedAt: new Date() };
       if (available !== undefined) patch.available = available;
       if (status === "offline") patch.available = false;
 

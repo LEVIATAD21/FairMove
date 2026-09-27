@@ -6,6 +6,7 @@ import { formatBRL } from "../../../src/logic/ride-request";
 import { completionPercent } from "../../../src/logic/profile";
 import { api, type DriverMeResponse, type RideHistoryItem } from "../../../src/services/api";
 import { useAuth } from "../../../src/auth/AuthProvider";
+import { useRealtime } from "../../../src/realtime/RealtimeProvider";
 
 function isToday(iso: string | null): boolean {
   if (!iso) return false;
@@ -28,7 +29,7 @@ function isToday(iso: string | null): boolean {
 export default function DriverHome() {
   const router = useRouter();
   const { user } = useAuth();
-  const [online, setOnline] = useState(false);
+  const { connected, online, setOnline, activeRide, error, locationDenied } = useRealtime();
   const [me, setMe] = useState<DriverMeResponse | null>(null);
   const [rides, setRides] = useState<RideHistoryItem[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -94,14 +95,28 @@ export default function DriverHome() {
             {online ? "● ONLINE" : "○ OFFLINE"}
           </AppText>
           <AppText variant="caption">
+            {connected ? "WebSocket conectado — push em tempo real." : "Conectando ao servidor..."}
+          </AppText>
+          <AppText variant="caption">
             {online
               ? "Aguardando solicitações reais de passageiros."
               : "Você não está visível para passageiros."}
           </AppText>
+          {activeRide ? (
+            <AppText variant="bodyStrong" color={colors.gold.DEFAULT}>
+              Corrida ativa: {activeRide.status}
+            </AppText>
+          ) : null}
+          {error ? <AppText variant="caption" color={colors.danger}>{error}</AppText> : null}
+          {locationDenied ? (
+            <AppText variant="caption" color={colors.danger}>
+              Localização negada — position real necessária para ficar online.
+            </AppText>
+          ) : null}
           <Button
             title={online ? "FICAR OFFLINE" : "FICAR ONLINE"}
             variant={online ? "secondary" : "primary"}
-            onPress={() => setOnline((v) => !v)}
+            onPress={() => void setOnline(!online)}
             style={styles.statusBtn}
             accessibilityLabel={online ? "Ficar offline" : "Ficar online"}
           />

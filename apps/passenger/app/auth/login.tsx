@@ -1,22 +1,45 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from "react-native";
 import { Link, useRouter } from "expo-router";
 import { AppText, Button, Input, Monogram, Screen, colors, spacing } from "@fairmove/ui";
+import { useAuth } from "../../src/auth/AuthProvider";
 
 /**
- * Login (Fase 1: estrutura + navegação; autenticação real chega com os MockServices).
- * Protegido contra duplo clique conforme restrição de idempotência.
+ * Login real: POST /api/v1/auth/login com tokens no SecureStore.
+ * Sessão já restaurada no boot → entra direto. Duplo clique bloqueado
+ * (restrição de idempotência).
  */
 export default function Login() {
   const router = useRouter();
+  const { status, login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const busy = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
 
-  const onLogin = () => {
-    if (busy.current) return;
-    busy.current = true;
-    router.replace("/passenger");
+  useEffect(() => {
+    if (status === "authed") router.replace("/passenger");
+  }, [status, router]);
+
+  const onLogin = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      await login(email.trim(), password);
+      router.replace("/passenger");
+    } catch (cause) {
+      const message =
+        cause instanceof Error && cause.message.includes("HTTP 4")
+          ? "E-mail ou senha inválidos."
+          : "Não foi possível entrar. Verifique sua conexão.";
+      setError(message);
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   };
 
   return (
@@ -54,7 +77,13 @@ export default function Login() {
             onChangeText={setPassword}
           />
 
-          <Button title="Entrar" onPress={onLogin} />
+          {error ? (
+            <AppText variant="caption" color={colors.danger} align="center">
+              {error}
+            </AppText>
+          ) : null}
+
+          <Button title={busy ? "Entrando..." : "Entrar"} onPress={() => void onLogin()} disabled={busy} />
         </View>
 
         <View style={styles.footer}>

@@ -214,8 +214,15 @@ export function validateQuery(schema: z.ZodTypeAny): RequestHandler {
       validationResponse(res, result.error.issues);
       return;
     }
-    // mantém req.query tipado/parseado para o handler
-    Object.assign(req.query, result.data);
+    // Express 5: req.query é um getter que reparsa a cada leitura, então
+    // Object.assign não persiste. Shadowa a propriedade na instância com os
+    // dados já parseados/coeridos pelo Zod para o handler receber tipos reais.
+    Object.defineProperty(req, "query", {
+      value: result.data,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
     next();
   };
 }

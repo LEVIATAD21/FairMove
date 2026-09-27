@@ -70,6 +70,15 @@ export function countdownLabel(remainingSeconds: number): string {
 export type RideRequestOutcome = "accepted" | "declined" | "expired";
 
 /**
+ * Representação textual de coordenada real (sem geocoder no app):
+ * `-23.5505, -46.6333`. Dado cru do evento — nunca um endereço inventado.
+ */
+export function formatCoord(lat: number, lng: number): string {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return "—";
+  return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+}
+
+/**
  * Resolve o resultado da decisão. `now` e `startedAt` em ms (mesma base de tempo).
  * O motorista ainda pode agir dentro da janela; após ela, tudo vira `expired`.
  */

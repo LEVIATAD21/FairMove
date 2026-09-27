@@ -21,6 +21,9 @@ import { fraudRouter } from "../../packages/fraud/src/routes";
 import { subscriptionRouter } from "../../packages/subscriptions/src/routes";
 import { eventsRouter } from "../../packages/events/src/routes";
 import { eventScheduler } from "../../packages/events/src/scheduler";
+import { attachRealtimeServer } from "../../packages/realtime/src/ws/server";
+import { eventPublisher } from "../../packages/realtime/src/redis/publisher";
+import { findNearbyDrivers } from "../../packages/matching/src/engine/matching-engine";
 
 /** Fail-fast: variáveis obrigatórias precisam existir antes de subir o servidor. */
 function assertRequiredEnv(): void {
@@ -205,9 +208,30 @@ const server = app.listen(port, () => {
   console.log(`FairMove backend running on port ${port}`);
 });
 
+// WebSocket /ws (JWT no handshake + Redis Pub/Sub + PostGIS broadcast).
+const realtime = attachRealtimeServer(server);
+console.log("WebSocket /ws ready");
+
+// Warm-up pós-boot: aquece o pool Postgres (plan da query PostGIS de
+// matching) e a conexão Redis do publicador. Sem isso o primeiro
+// ride:requested real paga o cold start e estoura o SLA de 1s.
+void (async () => {
+  try {
+    await findNearbyDrivers(-23.5505, -46.6333, undefined, 5);
+    await eventPublisher.warmup();
+    console.log("Warm-up done (PostGIS plan + Redis publisher)");
+  } catch (error) {
+    console.warn(
+      "Warm-up skipped:",
+      error instanceof Error ? error.message : "unknown error"
+    );
+  }
+})();
+
 function shutdown(signal: string): void {
   eventScheduler.stop();
   console.log(`${signal} received, shutting down gracefully...`);
+  void realtime.close().catch(() => undefined);
   server.close(() => {
     process.exit(0);
   });

@@ -27,7 +27,13 @@
       "bundler": "metro"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "O FairMove usa sua localização para definir o ponto de partida da corrida."
+        }
+      ]
     ],
     "extra": {
       "port": 8099

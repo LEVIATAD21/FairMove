@@ -27,7 +27,13 @@
       "bundler": "metro"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "O FairMove usa sua localização para conectar você a passageiros próximos."
+        }
+      ]
     ],
     "extra": {
       "port": 8100

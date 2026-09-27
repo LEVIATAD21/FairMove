@@ -2,19 +2,44 @@ import { useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, StyleSheet, View } from "react-native";
 import { Link, useRouter } from "expo-router";
 import { AppText, Button, Input, Monogram, Screen, colors, spacing } from "@fairmove/ui";
+import { useAuth } from "../../src/auth/AuthProvider";
 
-/** Cadastro (Fase 1: estrutura; validação/mock chegam na Fase 2). */
+/**
+ * Cadastro real: POST /api/v1/auth/register (conta criada no backend,
+ * tokens no SecureStore). Duplo clique bloqueado.
+ */
 export default function Register() {
   const router = useRouter();
+  const { register } = useAuth();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const busy = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
 
-  const onRegister = () => {
-    if (busy.current) return;
-    busy.current = true;
-    router.replace("/passenger");
+  const onRegister = async () => {
+    if (busyRef.current) return;
+    if (!name.trim() || !email.trim() || password.length < 8) {
+      setError("Preencha nome, e-mail e senha com pelo menos 8 caracteres.");
+      return;
+    }
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      await register(name.trim(), email.trim(), password);
+      router.replace("/passenger");
+    } catch (cause) {
+      const message =
+        cause instanceof Error && cause.message.includes("HTTP 4")
+          ? "Não foi possível criar a conta (dados inválidos ou e-mail já usado)."
+          : "Sem conexão com o servidor.";
+      setError(message);
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   };
 
   return (
@@ -52,14 +77,24 @@ export default function Register() {
           />
           <Input
             label="Senha"
-            placeholder="Mínimo de 8 caracteres"
+            placeholder="Mínimo 8 caracteres"
             secureTextEntry
-            autoComplete="new-password"
+            autoComplete="password-new"
             value={password}
             onChangeText={setPassword}
           />
 
-          <Button title="Começar" onPress={onRegister} />
+          {error ? (
+            <AppText variant="caption" color={colors.danger} align="center">
+              {error}
+            </AppText>
+          ) : null}
+
+          <Button
+            title={busy ? "Criando..." : "Criar conta"}
+            onPress={() => void onRegister()}
+            disabled={busy}
+          />
         </View>
 
         <View style={styles.footer}>

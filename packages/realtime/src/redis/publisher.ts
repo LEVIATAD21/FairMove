@@ -48,6 +48,15 @@ export class EventPublisher {
     return this.redis !== null;
   }
 
+  /** Aquece a conexão no boot para o primeiro evento real não pagar o cold start. */
+  async warmup(): Promise<void> {
+    if (!this.redis) return;
+    if (this.redis.status === "wait") {
+      await this.redis.connect();
+    }
+    await this.redis.ping();
+  }
+
   async publish(event: RideEvent): Promise<boolean> {
     if (!this.redis) return false;
     try {
@@ -99,6 +108,10 @@ export class EventPublisher {
 
   async publishRideCancelled(event: Record<string, unknown>) {
     return this.publishTyped("RideCancelled", String(event.rideId ?? ""), event);
+  }
+
+  async publishRideStatusChanged(event: Record<string, unknown>) {
+    return this.publishTyped("RideStatusChanged", String(event.rideId ?? ""), event);
   }
 
   async close(): Promise<void> {

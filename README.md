@@ -80,6 +80,9 @@ When running the backend directly on the host instead of through Docker Compose,
 - `pnpm db:studio` - Open Drizzle Studio
 - `pnpm docker:up` - Start Docker infrastructure
 - `pnpm docker:down` - Stop Docker infrastructure
+- `pnpm db:seed-driver` - Seed idempotente de driver/admin reais (PASSO 4)
+- `pnpm e2e:ride` - E2E REST da corrida completa (Postgres real)
+- `pnpm demo:e2e` - Demo E2E tempo real: WebSocket +10 critérios &lt;1s
 
 ## Core Features (MVP)
 
@@ -170,6 +173,44 @@ idempotência única por execução; corrida nova a cada rodada).
 Nota: o engine de pricing pula de R$ 14,53 para R$ 14,62 num intervalo de
 0,005 km (arredondamento do tempo) — não existe tarifa de R$ 14,56 sem cupom.
 
+### 6. FASE 3 — ciclo completo em tempo real (WebSocket)
+
+```bash
+pnpm build
+pnpm db:seed-driver
+pnpm demo:e2e        # 10 critérios medidos, tudo <1s, outputs crus
+```
+
+A demo conecta dois WebSockets reais (`/ws?token=` — JWT validado no
+handshake) e mede a latência ponta a ponta de cada etapa:
+
+| Critério | Caminho | SLA |
+|---|---|---|
+| passageiro pediu → motorista recebe `ride:requested` | `POST /rides` → Redis Pub/Sub → `ST_DWithin` (PostGIS) → WS | &lt;1s |
+| motorista aceita → passageiro vê `ride:matched` | `POST /rides/:id/accept` → Redis → WS (placa real) | &lt;1s |
+| transições de status (`ride:status`) | `PATCH /rides/:id/status` → Redis → WS | &lt;1s |
+| localização nos dois sentidos (`driver:location` / `passenger:location`) | WS ↔ WS | &lt;1s |
+| `complete` → saldos + ledger (débito/crédito) | transação única `paymentMethod: "wallet"` | — |
+
+Garantias da FASE 3:
+- **Sem polling**: dados chegam por push; o único timer é o TX de
+  localização (3s, outbound, só com motorista online).
+- **Matching 100% PostGIS**: `ST_DWithin` (filtro) + `ST_DDistance`
+  (ordenação) sobre `drivers.current_location_*` — distância nunca é
+  calculada em JS no servidor.
+- **Sem localização falsa**: motorista offline nunca transmite posição
+  (servidor recusa) e sem permissão o app não envia nada.
+- **Warm-up de boot**: plan PostGIS + conexão Redis do publicador são
+  aquecidos no startup — o primeiro evento real não paga cold start
+  (run frio mede ~292ms).
+- **Reconexão automática**: backoff exponencial + jitter (1s → 30s) no
+  app; JWT sempre reenviado no handshake.
+- **Apps**: motorista (WS abre o modal de oferta com preço real, accept
+  via `POST /rides/:id/accept`, online/offline real, TX de posição) e
+  passageiro (pickup = posição do aparelho, destino = geocoding OSM
+  real, quote do pricing antes de confirmar, acompanhamento da corrida
+  por WS, histórico/saldo/extrato reais).
+
 ### Endpoints principais (v1)
 | Método | Rota | Observação |
 |---|---|---|
@@ -182,4 +223,9 @@ Nota: o engine de pricing pula de R$ 14,53 para R$ 14,62 num intervalo de
 | POST | `/api/v1/rides/:rideId/accept` \| `complete` | motorista aceita/conclui |
 | PATCH | `/api/v1/rides/:rideId/status` | avanço de estados da corrida |
 | GET | `/api/v1/rides/history/me` | histórico de corridas |
+| POST | `/api/v1/matching/driver/status` | motorista online/offline (real) |
+| POST | `/api/v1/matching/driver/location` | posição REST (o app usa WS) |
+| GET | `/api/v1/matching/drivers/nearby?lat&lng&radiusKm` | busca PostGIS |
+| POST | `/api/v1/pricing/quote` | orçamento real (persistido p/ auditoria) |
+| WS | `/ws?token=<accessToken>` | eventos push (ver FASE 3) |
 | POST | `/api/v1/subscriptions/:id/opt-out` | opt-out irreversível da reserva |
