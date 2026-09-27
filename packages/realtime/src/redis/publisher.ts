@@ -66,7 +66,7 @@ export class EventPublisher {
       await this.redis.publish(this.channel, JSON.stringify(event));
       return true;
     } catch (error) {
-      console.error("Failed to publish event:", error);
+      console.error("Failed to publish event:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       return false;
     }
   }

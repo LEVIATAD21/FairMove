@@ -2,14 +2,14 @@ import { Router, type Request, type Response } from "express";
 import { db, users, sessions, verificationTokens, onboardingCompletion } from "@fairmove/shared-db";
 import { eq, and, ne } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
-import { createHash, randomBytes } from "crypto";
+import { createHash, randomBytes, timingSafeEqual } from "crypto";
 import { sign, verify, TokenExpiredError, JsonWebTokenError } from "jsonwebtoken";
 import {
   RegisterSchema,
   LoginSchema,
   ForgotPasswordSchema,
   ResetPasswordSchema,
-  PasswordSchema,
+  ChangePasswordSchema,
   validateBody,
 } from "@fairmove/validation";
 import { hashPassword, comparePassword } from "./utils/password";
@@ -25,6 +25,20 @@ import {
 } from "./middleware";
 
 const router = Router();
+
+/** Todos os verify() pinam o algoritmo: nenhum header `alg` escolhido pelo cliente. */
+const JWT_ALGORITHMS = ["HS256"] as const;
+
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/** Comparação em tempo constante (hash de ambos os lados ⇒ tamanhos iguais). */
+function safeEquals(a: string, b: string): boolean {
+  const ha = createHash("sha256").update(a).digest();
+  const hb = createHash("sha256").update(b).digest();
+  return timingSafeEqual(ha, hb);
+}
 
 /** Spec de produção: access 15min (curto p/ mobile), refresh 7d. */
 function accessTokenTtl(): string {
@@ -54,22 +68,27 @@ async function issueTokens(userId: string, role: string, sessionId?: string) {
   const sid = sessionId || uuidv4();
   const accessToken = sign({ userId, role, sessionId: sid }, getJwtSecret(), {
     expiresIn: accessTokenTtl(),
+    algorithm: "HS256",
   });
   const refreshToken = sign(
     { userId, role, sessionId: sid, type: "refresh" },
     getRefreshTokenSecret(),
-    { expiresIn: refreshTokenTtl() }
+    { expiresIn: refreshTokenTtl(), algorithm: "HS256" }
   );
 
   const expiresAt = new Date(Date.now() + Math.max(ttlToMs(refreshTokenTtl()), ttlToMs(accessTokenTtl())));
 
+  // O refresh token NUNCA é gravado em claro: só o SHA-256 (fingerprint).
+  // Com isso um dump da tabela `sessions` não entrega tokens utilizáveis.
   if (sessionId) {
     await db
       .update(sessions)
-      .set({ token: refreshToken, role, expiresAt, updatedAt: new Date() })
+      .set({ token: hashToken(refreshToken), role, expiresAt, updatedAt: new Date() })
       .where(eq(sessions.id, sessionId));
   } else {
-    await db.insert(sessions).values({ id: sid, userId, role, token: refreshToken, expiresAt });
+    await db
+      .insert(sessions)
+      .values({ id: sid, userId, role, token: hashToken(refreshToken), expiresAt });
   }
 
   return { accessToken, refreshToken, sessionId: sid };
@@ -91,7 +110,9 @@ router.post("/register", validateBody(RegisterSchema), async (req: Request, res:
 
     const existingUser = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
     if (existingUser.length > 0) {
-      res.status(409).json({ error: "Email already registered" });
+      // Mensagem única de falha de registro (não confirma qual campo colidiu —
+      // enumeração de e-mails cadastrados mitigada; ver README).
+      res.status(409).json({ error: "Registration could not be completed" });
       return;
     }
 
@@ -106,7 +127,7 @@ router.post("/register", validateBody(RegisterSchema), async (req: Request, res:
       newUser = created[0];
     } catch (error) {
       if (isUniqueViolation(error)) {
-        res.status(409).json({ error: "Email already registered" });
+        res.status(409).json({ error: "Registration could not be completed" });
         return;
       }
       throw error;
@@ -127,7 +148,7 @@ router.post("/register", validateBody(RegisterSchema), async (req: Request, res:
       refreshToken,
     });
   } catch (error) {
-    console.error("Register error:", error);
+    console.error("Register error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -157,7 +178,7 @@ router.post("/login", validateBody(LoginSchema), async (req: Request, res: Respo
       refreshToken,
     });
   } catch (error) {
-    console.error("Login error:", error);
+    console.error("Login error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -174,7 +195,9 @@ async function refreshHandler(req: Request, res: Response): Promise<void> {
 
     let payload: JwtPayloadShape & { type?: string };
     try {
-      payload = verify(refreshToken, getRefreshTokenSecret()) as JwtPayloadShape & { type?: string };
+      payload = verify(refreshToken, getRefreshTokenSecret(), {
+        algorithms: [...JWT_ALGORITHMS],
+      }) as JwtPayloadShape & { type?: string };
     } catch (error) {
       if (error instanceof TokenExpiredError) {
         res.status(401).json({ error: "Refresh token expired" });
@@ -204,11 +227,25 @@ async function refreshHandler(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    if (session[0].token !== refreshToken) {
+    // O banco guarda o SHA-256 do refresh (nunca o token em claro). Sessões
+    // legadas com token cru são aceitas UMA vez e migradas na hora.
+    const presentedHash = hashToken(refreshToken);
+    const storedToken = session[0].token;
+    const matchesHash = safeEquals(storedToken, presentedHash);
+    const matchesLegacy = !matchesHash && safeEquals(storedToken, refreshToken);
+
+    if (!matchesHash && !matchesLegacy) {
       // Reuso detectado: revoga a sessão inteira por segurança.
       await db.delete(sessions).where(eq(sessions.id, session[0].id));
       res.status(401).json({ error: "Refresh token reuse detected, session revoked" });
       return;
+    }
+
+    if (matchesLegacy) {
+      await db
+        .update(sessions)
+        .set({ token: presentedHash, updatedAt: new Date() })
+        .where(eq(sessions.id, session[0].id));
     }
 
     if (session[0].expiresAt && session[0].expiresAt.getTime() < Date.now()) {
@@ -230,7 +267,7 @@ async function refreshHandler(req: Request, res: Response): Promise<void> {
 
     res.json({ token: tokens.accessToken, refreshToken: tokens.refreshToken });
   } catch (error) {
-    console.error("Refresh token error:", error);
+    console.error("Refresh token error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(401).json({ error: "Invalid refresh token" });
   }
 }
@@ -254,7 +291,7 @@ router.get("/verify", requireAuth, async (req: Request, res: Response) => {
 
     res.json({ user: user[0] });
   } catch (error) {
-    console.error("Verify token error:", error);
+    console.error("Verify token error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -269,14 +306,10 @@ router.post("/logout", requireAuth, async (req: Request, res: Response) => {
     );
     res.status(204).send();
   } catch (error) {
-    console.error("Logout error:", error);
+    console.error("Logout error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
-function hashToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
 
 // Forgot password — nunca expõe o token em produção
 router.post(
@@ -309,15 +342,17 @@ router.post(
       });
 
       // TODO: integrar provedor de e-mail (SMTP/Mailgun/SES).
-      // Enquanto não houver provedor, o link é registrado apenas no log do servidor.
-      console.info(`[password-reset] user=${user[0].id} token=${rawToken}`);
+      // O token de reset é SEGREDO: jamais vai para log (vazaria o vetor de
+      // takeover de conta). No dev, o corpo da resposta pode trazê-lo quando
+      // EXPOSE_RESET_TOKEN=true (única via permitida).
+      console.info(`[password-reset] userId=${user[0].id} (token redacted from logs)`);
 
       // Em desenvolvimento, permite obter o token para testar o fluxo.
       const exposeToken =
         process.env.NODE_ENV !== "production" && process.env.EXPOSE_RESET_TOKEN === "true";
       res.json(exposeToken ? { ...response, resetToken: rawToken } : response);
     } catch (error) {
-      console.error("Forgot password error:", error);
+      console.error("Forgot password error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -358,7 +393,7 @@ router.post(
 
       res.json({ message: "Password has been reset. Please sign in again." });
     } catch (error) {
-      console.error("Reset password error:", error);
+      console.error("Reset password error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -368,22 +403,13 @@ router.post(
 router.post(
   "/change-password",
   requireAuth,
+  validateBody(ChangePasswordSchema),
   async (req: Request, res: Response) => {
     try {
-      const { currentPassword, newPassword } = req.body ?? {};
-      if (!currentPassword || !newPassword) {
-        res.status(400).json({ error: "currentPassword and newPassword are required" });
-        return;
-      }
-
-      const parsed = PasswordSchema.safeParse(newPassword);
-      if (!parsed.success) {
-        res.status(400).json({
-          error: "Validation failed",
-          details: parsed.error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
-        });
-        return;
-      }
+      const { currentPassword, newPassword } = req.body as {
+        currentPassword: string;
+        newPassword: string;
+      };
 
       const user = await db.select().from(users).where(eq(users.id, req.user!.id));
       if (user.length === 0) {
@@ -412,7 +438,7 @@ router.post(
 
       res.json({ message: "Password updated" });
     } catch (error) {
-      console.error("Change password error:", error);
+      console.error("Change password error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -433,7 +459,7 @@ router.get("/sessions", requireAuth, async (req: Request, res: Response) => {
 
     res.json({ sessions: rows });
   } catch (error) {
-    console.error("List sessions error:", error);
+    console.error("List sessions error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -453,7 +479,7 @@ router.delete("/sessions/:sessionId", requireAuth, async (req: Request, res: Res
     }
     res.status(204).send();
   } catch (error) {
-    console.error("Delete session error:", error);
+    console.error("Delete session error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });

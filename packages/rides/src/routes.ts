@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { db, rides, rideLocationEvents, users, drivers, vehicles, risk_scores, type Ride } from "@fairmove/shared-db";
-import { eq, and, or, desc, sql } from "drizzle-orm";
+import { eq, and, or, desc, sql, inArray, ne } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { requireAuth, type AuthUser } from "../../auth/src/middleware";
 import { validateBody, CreateRideSchema, CancelRideSchema } from "@fairmove/validation";
@@ -36,6 +36,17 @@ const DRIVER_ADVANCE_STATUSES = new Set([
   "PASSENGER_ONBOARD",
   "IN_PROGRESS",
 ]);
+
+/** Status em que a corrida ainda consome recursos (bloqueia nova corrida/accept). */
+const ACTIVE_RIDE_STATUSES = [
+  "REQUESTED",
+  "SEARCHING",
+  "DRIVER_ASSIGNED",
+  "DRIVER_ARRIVING",
+  "DRIVER_AT_PICKUP",
+  "PASSENGER_ONBOARD",
+  "IN_PROGRESS",
+] as const;
 
 function centsToNumber(cents: number): number {
   return Math.round(cents) / 100;
@@ -92,6 +103,27 @@ router.post("/", requireAuth, validateBody(CreateRideSchema), async (req: Reques
       .where(eq(risk_scores.userId, user.id));
     if (riskRows.length > 0 && riskRows[0].riskLevel === "CRITICAL") {
       res.status(403).json({ error: "Account blocked due to risk policy" });
+      return;
+    }
+
+    // Corridas fantasmas: um passageiro só pode ter UMA corrida ativa por vez.
+    // Sem isso, spam de POST criava N corridas REQUESTED concorrentes que
+    // disparavam N broadcasts de match e drenavam a fila de motoristas.
+    const activeRows = await db
+      .select({ id: rides.id, status: rides.status })
+      .from(rides)
+      .where(
+        and(
+          eq(rides.passengerId, user.id),
+          inArray(rides.status, [...ACTIVE_RIDE_STATUSES])
+        )
+      );
+    if (activeRows.length > 0) {
+      res.status(409).json({
+        error: "Passenger already has an active ride",
+        rideId: activeRows[0].id,
+        status: activeRows[0].status,
+      });
       return;
     }
 
@@ -165,7 +197,7 @@ router.post("/", requireAuth, validateBody(CreateRideSchema), async (req: Reques
       currency: "BRL",
     });
   } catch (error) {
-    console.error("Create ride error:", error);
+    console.error("Create ride error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -187,7 +219,7 @@ router.get("/:rideId", requireAuth, async (req: Request, res: Response) => {
       driverCreditAmount: centsToNumber(result.ride.driverCredit),
     });
   } catch (error) {
-    console.error("Get ride error:", error);
+    console.error("Get ride error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -225,37 +257,67 @@ router.post("/:rideId/accept", requireAuth, async (req: Request, res: Response) 
       return;
     }
 
-    // Garante que a corrida está em busca (REQUESTED -> SEARCHING)
-    if (ride.status === "REQUESTED") {
-      const advanced = await db
-        .update(rides)
-        .set({ status: "SEARCHING", updatedAt: new Date() })
-        .where(and(eq(rides.id, rideId), eq(rides.status, "REQUESTED")))
-        .returning({ id: rides.id });
-      if (advanced.length === 0) {
-        res.status(409).json({ error: "Ride is not available for search anymore" });
-        return;
+    // Claim + atribuição numa ÚNICA transação:
+    // - o UPDATE condicional do motorista fecha o TOCTOU: o mesmo motorista
+    //   não aceita duas corridas em paralelo (o guard da corrida sozinho não
+    //   impedia isso);
+    // - rollback automático devolve `available` se a corrida já saiu da fila.
+    const outcome = await db.transaction(async (tx): Promise<
+      "driver_busy" | "searching_gone" | "taken" | "assigned"
+    > => {
+      const claimed = await tx
+        .update(drivers)
+        .set({ available: false, updatedAt: new Date() })
+        .where(
+          and(
+            eq(drivers.id, driver.id),
+            eq(drivers.available, true),
+            ne(drivers.status, "offline")
+          )
+        )
+        .returning({ id: drivers.id });
+      if (claimed.length === 0) return "driver_busy";
+
+      // Garante que a corrida está em busca (REQUESTED -> SEARCHING)
+      if (ride.status === "REQUESTED") {
+        const advanced = await tx
+          .update(rides)
+          .set({ status: "SEARCHING", updatedAt: new Date() })
+          .where(and(eq(rides.id, rideId), eq(rides.status, "REQUESTED")))
+          .returning({ id: rides.id });
+        if (advanced.length === 0) return "searching_gone";
       }
+
+      // Atômico: apenas um motorista consegue atribuir a corrida
+      const assigned = await tx
+        .update(rides)
+        .set({
+          status: "DRIVER_ASSIGNED",
+          driverId: driver.id,
+          vehicleId: driver.vehicleId,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(rides.id, rideId), eq(rides.status, "SEARCHING"), sql`${rides.driverId} IS NULL`)
+        )
+        .returning({ id: rides.id });
+      if (assigned.length === 0) return "taken";
+
+      return "assigned";
+    });
+
+    if (outcome === "driver_busy") {
+      res.status(409).json({ error: "Driver is not available" });
+      return;
     }
-
-    // Atômico: apenas um motorista consegue atribuir a corrida
-    const assigned = await db
-      .update(rides)
-      .set({
-        status: "DRIVER_ASSIGNED",
-        driverId: driver.id,
-        vehicleId: driver.vehicleId,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(rides.id, rideId), eq(rides.status, "SEARCHING"), sql`${rides.driverId} IS NULL`))
-      .returning({ id: rides.id });
-
-    if (assigned.length === 0) {
+    if (outcome === "searching_gone") {
+      res.status(409).json({ error: "Ride is not available for search anymore" });
+      return;
+    }
+    if (outcome === "taken") {
       res.status(409).json({ error: "Ride was already accepted by another driver" });
       return;
     }
-
-    await setDriverAvailability(driver.id, false);
 
     await recordRideEvent(
       rideId,
@@ -283,7 +345,7 @@ router.post("/:rideId/accept", requireAuth, async (req: Request, res: Response) 
 
     res.json({ rideId, status: "DRIVER_ASSIGNED", driverId: driver.id });
   } catch (error) {
-    console.error("Accept ride error:", error);
+    console.error("Accept ride error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -370,7 +432,7 @@ router.patch(
 
       res.json({ rideId, status });
     } catch (error) {
-      console.error("Update ride status error:", error);
+      console.error("Update ride status error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -482,7 +544,7 @@ router.post("/:rideId/complete", requireAuth, async (req: Request, res: Response
       res.status(402).json({ error: "Payment could not be processed" });
       return;
     }
-    console.error("Complete ride error:", error);
+    console.error("Complete ride error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -550,7 +612,7 @@ router.post(
       try {
         await releaseRedemptions(rideId);
       } catch (error) {
-        console.error("Release redemptions error:", error);
+        console.error("Release redemptions error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       }
 
       await recordRideEvent(
@@ -574,7 +636,7 @@ router.post(
 
       res.json({ rideId, status: cancelStatus });
     } catch (error) {
-      console.error("Cancel ride error:", error);
+      console.error("Cancel ride error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -606,7 +668,7 @@ router.get("/history/me", requireAuth, async (req: Request, res: Response) => {
       })),
     });
   } catch (error) {
-    console.error("Get ride history error:", error);
+    console.error("Get ride history error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });

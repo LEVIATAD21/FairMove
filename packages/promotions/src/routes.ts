@@ -48,7 +48,7 @@ router.post(
         currency: "BRL",
       });
     } catch (error) {
-      console.error("Preview promotion error:", error);
+      console.error("Preview promotion error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -75,7 +75,7 @@ async function applyHandler(req: Request, res: Response) {
       res.status(status).json({ error: (error as Error).message });
       return;
     }
-    console.error("Apply promotion error:", error);
+    console.error("Apply promotion error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 }
@@ -118,7 +118,7 @@ router.post(
         res.status(status).json({ error: (error as Error).message });
         return;
       }
-      console.error("Create campaign error:", error);
+      console.error("Create campaign error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -139,14 +139,15 @@ router.post(
         res.status(status).json({ error: (error as Error).message });
         return;
       }
-      console.error("Generate coupon error:", error);
+      console.error("Generate coupon error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       res.status(500).json({ error: "Internal server error" });
     }
   }
 );
 
-// Listar campanhas ativas
-router.get("/campaigns", requireAuth, async (_req: Request, res: Response) => {
+// Listar campanhas ativas — admin: a lista traz alavancas de negócio
+// (target_value, max_uses/uses_count, janelas) que não são de usuário final.
+router.get("/campaigns", requireAuth, requireRole("admin"), async (_req: Request, res: Response) => {
   try {
     const allCampaigns = await db
       .select()
@@ -154,7 +155,7 @@ router.get("/campaigns", requireAuth, async (_req: Request, res: Response) => {
       .where(eq(campaigns.is_active, true));
     res.json(allCampaigns);
   } catch (error) {
-    console.error("Get campaigns error:", error);
+    console.error("Get campaigns error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });

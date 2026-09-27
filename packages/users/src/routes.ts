@@ -29,7 +29,7 @@ router.get("/me", requireAuth, async (req: Request, res: Response) => {
       driver: driver[0] || null,
     });
   } catch (error) {
-    console.error("Get user profile error:", error);
+    console.error("Get user profile error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -74,7 +74,7 @@ router.put("/profile", requireAuth, validateBody(ProfileUpdateSchema), async (re
 
     res.json({ user: user[0] });
   } catch (error) {
-    console.error("Update profile error:", error);
+    console.error("Update profile error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -145,7 +145,7 @@ router.post(
 
       res.status(201).json({ message: "Driver onboarded successfully", driverId, vehicleId });
     } catch (error) {
-      console.error("Driver onboarding error:", error);
+      console.error("Driver onboarding error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -164,7 +164,7 @@ router.get("/driver/me", requireAuth, async (req: Request, res: Response) => {
       : [];
     res.json({ driver: driver[0], vehicle: vehicle[0] || null });
   } catch (error) {
-    console.error("Get driver profile error:", error);
+    console.error("Get driver profile error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });

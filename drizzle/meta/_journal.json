@@ -29,6 +29,13 @@
       "when": 1790463310011,
       "tag": "0003_event_rewards",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790545749255,
+      "tag": "0004_sweet_the_call",
+      "breakpoints": true
     }
   ]
 }

@@ -115,6 +115,67 @@ When running the backend directly on the host instead of through Docker Compose,
 - All operations are transactional, idempotent, and auditables
 - Idempotency keys on critical operations
 
+## Security
+
+Hardening audit: all critical/high findings fixed, validated by automated
+tests (`tests/wallet-ledger-atomicity.test.ts`, `tests/security-routes.test.ts`,
+`tests/ws-handshake.test.ts`, `tests/subscription-trial-guard.test.ts`) —
+147 tests green.
+
+### Critical
+
+- **Wallet double-spend**: every balance mutation (`credit`, `debit`,
+  `creditReserve`, `moveEmergencyReserve`, `moveRideSettlement`) now runs in a
+  single database transaction; idempotency checks and ledger inserts are inside
+  the same transaction (unique violation `23505` → rollback, balance unchanged).
+- **JWT secrets**: startup fails if `JWT_SECRET`/`REFRESH_TOKEN_SECRET` are
+  missing, shorter than 32 chars (64 in production), identical to each other,
+  or if `JWT_EXPIRES_IN` uses days in production. Generate with
+  `openssl rand -base64 48`.
+- **Payments**: `POST /payments/*` requires JWT **and** `admin` role (was
+  open to the world), body validated with Zod.
+- **Ride state races**: a passenger can only hold one active ride (409);
+  driver acceptance is an atomic claim (`available` driver row + ride row in
+  one transaction) — two parallel accepts result in exactly one winner.
+- **Password reset**: reset tokens are never written to logs
+  (`token redacted from logs`) nor returned in responses.
+- **Infrastructure**: Postgres/Redis bound to `127.0.0.1`, Redis requires a
+  password (`REDIS_URL` with `requirepass`), ephemeral secrets generated per
+  CI run (no hardcoded credentials in the workflow).
+
+### High
+
+- **Refresh tokens**: stored only as SHA-256 fingerprints (legacy plaintext
+  rows are migrated on first use); reuse of a rotated token revokes the whole
+  session; JWT verification pinned to `HS256`.
+- **WebSocket**: token only via `Sec-WebSocket-Protocol: fairmove.auth` —
+  never in the query string; server validates the session row on every
+  handshake; handshake rate limited (15/min/IP).
+- **Trial loop**: reactivation never re-grants the 30-day trial nor extends a
+  billing period that already ended (monthly fee becomes due again).
+- **Event enrollments**: capacity cap, reward balance check (402 if
+  insufficient), deterministic idempotency key; admin-only leaderboard access.
+- **Trust proxy**: off by default, enabled only via `TRUST_PROXY` env —
+  `X-Forwarded-For` cannot forge rate-limit identity.
+
+### Medium (selected)
+
+- `/matching/drivers/nearby` and promotion campaigns are admin-only; fraud
+  calculation details and event metadata stripped for non-admins; login rate
+  limited per account (5/15min) plus per-IP auth limiter; generic registration
+  error (no account enumeration); URL-encoded body limited to 10kb;
+  `/health`/`/ready` expose status only (no internal error messages);
+  `compression` enabled; error logs use stack traces instead of objects.
+
+### Accepted risks (documented)
+
+- Account enumeration is mitigated by rate limiting and a uniform
+  "if an account exists" response, not fully eliminated.
+- Mock payment gateway remains (no real PSP integrated yet): endpoint
+  responses are simulated, but authorization rules and Zod validation are real.
+- Node 20 Docker image fails to build this monorepo (`ERR_UNKNOWN_BUILTIN_MODULE`);
+  local/staging runs on Node 22.
+
 ## Backend real + app mobile (staging local)
 
 ### 1. Infraestrutura (Postgres + Redis reais)

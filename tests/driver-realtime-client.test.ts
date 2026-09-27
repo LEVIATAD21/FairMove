@@ -13,9 +13,11 @@ class FakeWebSocket {
   onmessage: Listener<{ data: unknown }> = null;
   sent: string[] = [];
   url: string;
+  protocols: string[] | undefined;
 
-  constructor(url: string) {
+  constructor(url: string, protocols?: string[]) {
     this.url = url;
+    this.protocols = protocols;
     FakeWebSocket.instances.push(this);
   }
 
@@ -78,11 +80,16 @@ describe("wsEndpoint — derivação da URL do transporte", () => {
 });
 
 describe("RealTimeClient — transporte com reconexão", () => {
-  test("connect abre socket com access token na query do handshake", () => {
+  test("connect abre socket SEM token na URL (token no subprotocolo fairmove.auth)", () => {
     const client = new RealTimeClient();
     client.connect();
     expect(FakeWebSocket.instances).toHaveLength(1);
-    expect(FakeWebSocket.instances[0].url).toContain("/ws?token=access-1");
+    const socket = FakeWebSocket.instances[0];
+    // URL limpa: token jamais aparece na query (vazaria em logs de proxy/CDN).
+    expect(socket.url).not.toContain("token");
+    expect(socket.url).not.toContain("access-1");
+    expect(socket.url).toBe("ws://localhost:3000/ws");
+    expect(socket.protocols).toEqual(["fairmove.auth", "access-1"]);
     client.disconnect();
   });
 

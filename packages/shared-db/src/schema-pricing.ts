@@ -2,6 +2,8 @@ import { pgTable, text, integer, timestamp } from "drizzle-orm/pg-core";
 
 export const pricing_quotes = pgTable("pricing_quotes", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  /** Dono do quote — GET /quote/:id só resolve para ele (anti-IDOR). Nullable p/ dados anteriores. */
+  userId: text("user_id"),
   base_fare: integer("base_fare").default(0).notNull(),
   distance_fare_per_km: integer("distance_fare_per_km").default(0).notNull(),
   time_fare_per_minute: integer("time_fare_per_minute").default(0).notNull(),

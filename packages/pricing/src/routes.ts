@@ -72,6 +72,7 @@ router.post(
       const quoteId = uuidv4();
       await db.insert(pricing_quotes).values({
         id: quoteId,
+        userId: req.user!.id,
         base_fare: toCents(PRICING_RULES.baseFare),
         distance_fare_per_km: toCents(PRICING_RULES.perKm),
         time_fare_per_minute: toCents(PRICING_RULES.perMinute),
@@ -90,18 +91,21 @@ router.post(
         currency: "BRL",
       });
     } catch (error) {
-      console.error("Calculate quote error:", error);
+      console.error("Calculate quote error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       res.status(500).json({ error: "Internal server error" });
     }
   }
 );
 
-// Get quote by ID
+// Get quote by ID — só o dono do quote (ou admin) o enxerga (anti-IDOR).
 router.get("/quote/:id", requireAuth, async (req: Request, res: Response) => {
   try {
     const { id } = req.params as { id: string };
 
-    const quote = await db.select().from(pricing_quotes).where(eq(pricing_quotes.id, id));
+    const quote = await db
+      .select()
+      .from(pricing_quotes)
+      .where(eq(pricing_quotes.id, id));
 
     if (quote.length === 0) {
       res.status(404).json({ error: "Quote not found" });
@@ -109,6 +113,12 @@ router.get("/quote/:id", requireAuth, async (req: Request, res: Response) => {
     }
 
     const row = quote[0];
+    const isOwner = row.userId === req.user!.id;
+    if (!isOwner && req.user!.role !== "admin") {
+      // Mesmo 404 do "não existe": não confirma a existência de quote alheio.
+      res.status(404).json({ error: "Quote not found" });
+      return;
+    }
     res.json({
       quoteId: row.id,
       originalPrice: fromCents(row.original_price),
@@ -120,7 +130,7 @@ router.get("/quote/:id", requireAuth, async (req: Request, res: Response) => {
       createdAt: row.created_at,
     });
   } catch (error) {
-    console.error("Get quote error:", error);
+    console.error("Get quote error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });

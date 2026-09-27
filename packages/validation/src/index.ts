@@ -58,8 +58,16 @@ export const LoginSchema = z.object({
 export const ForgotPasswordSchema = z.object({ email: EmailSchema });
 
 export const ResetPasswordSchema = z.object({
-  token: z.string().uuid(),
+  // O emissor gera randomBytes(32).toString("hex") = 64 chars hex (não UUID).
+  token: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/i, "Invalid reset token format"),
   password: PasswordSchema,
+});
+
+export const ChangePasswordSchema = z.object({
+  currentPassword: z.string().min(1, "Current password is required").max(72),
+  newPassword: PasswordSchema,
 });
 
 export const LatSchema = z.coerce

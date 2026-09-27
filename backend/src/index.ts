@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express, { Express, NextFunction, Request, Response } from "express";
 import helmet from "helmet";
+import compression from "compression";
 import cors from "cors";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
@@ -32,11 +33,39 @@ function assertRequiredEnv(): void {
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
   }
-  if (!process.env.REFRESH_TOKEN_SECRET) {
-    console.warn("[config] REFRESH_TOKEN_SECRET ausente — usando JWT_SECRET para refresh tokens.");
+
+  // Política de segredos: mínimo absoluto de 32 chars em qualquer ambiente e
+  // 64+ em produção (entropia suficiente p/ HS256). Gere com `openssl rand -base64 48`.
+  const isProduction = process.env.NODE_ENV === "production";
+  const minSecretLength = isProduction ? 64 : 32;
+  const jwtSecret = process.env.JWT_SECRET ?? "";
+  if (jwtSecret.length < minSecretLength) {
+    throw new Error(
+      `JWT_SECRET must be at least ${minSecretLength} characters ` +
+        `(got ${jwtSecret.length}). Generate one with: openssl rand -base64 48`
+    );
   }
-  if (process.env.NODE_ENV === "production" && (process.env.JWT_SECRET ?? "").length < 32) {
-    throw new Error("JWT_SECRET must be at least 32 characters in production.");
+
+  const refreshSecret = process.env.REFRESH_TOKEN_SECRET;
+  if (!refreshSecret) {
+    console.warn("[config] REFRESH_TOKEN_SECRET ausente — usando JWT_SECRET para refresh tokens.");
+  } else {
+    if (refreshSecret.length < minSecretLength) {
+      throw new Error(
+        `REFRESH_TOKEN_SECRET must be at least ${minSecretLength} characters ` +
+          `(got ${refreshSecret.length}). Generate one with: openssl rand -base64 48`
+      );
+    }
+    if (refreshSecret === jwtSecret) {
+      throw new Error("REFRESH_TOKEN_SECRET must be different from JWT_SECRET.");
+    }
+  }
+
+  const expires = process.env.JWT_EXPIRES_IN;
+  if (expires && /(\d+)\s*d/.test(expires) && isProduction) {
+    throw new Error(
+      `JWT_EXPIRES_IN=${expires} is too long for production (use 15m, see spec).`
+    );
   }
 }
 
@@ -45,11 +74,19 @@ assertRequiredEnv();
 const app: Express = express();
 const port: number = Number(process.env.PORT) || 4000;
 
-// Necessário para express-rate-limit identificar o IP real atrás de proxy reverso.
-app.set("trust proxy", 1);
+// Trust proxy: NUNCA hardcoded. Sem proxy real, `trust proxy` faria o
+// express-rate-limit confiar em X-Forwarded-For forjável (burla todo rate
+// limit). Só ativa com TRUST_PROXY explícito (ex.: 1 atrás de nginx/LB).
+const trustProxyEnv = (process.env.TRUST_PROXY ?? "").trim();
+if (trustProxyEnv === "true" || trustProxyEnv === "1") {
+  app.set("trust proxy", 1);
+} else if (trustProxyEnv && !Number.isNaN(Number(trustProxyEnv))) {
+  app.set("trust proxy", Number(trustProxyEnv));
+}
 app.disable("x-powered-by");
 
 app.use(helmet());
+app.use(compression());
 app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:3000" }));
 app.use(morgan("combined"));
 
@@ -72,7 +109,7 @@ const authLimiter = rateLimit({
 });
 
 app.use(express.json({ limit: "10kb" }));
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false, limit: "10kb" }));
 
 type DependencyCheck = {
   status: "up" | "down" | "skipped";
@@ -87,11 +124,12 @@ async function checkDatabase(): Promise<DependencyCheck> {
     await db.execute(sql`SELECT 1`);
     return { status: "up", latencyMs: Date.now() - startedAt };
   } catch (error) {
-    return {
-      status: "down",
-      latencyMs: Date.now() - startedAt,
-      error: error instanceof Error ? error.message : "unknown error",
-    };
+    // A mensagem do erro NUNCA sai daqui: vaza internals de infra (host, dsn).
+    console.error(
+      "[health] database check failed:",
+      error instanceof Error ? error.message : error
+    );
+    return { status: "down", latencyMs: Date.now() - startedAt };
   }
 }
 
@@ -122,13 +160,24 @@ async function checkRedis(): Promise<DependencyCheck> {
     // Descarta o cliente com estado quebrado; o próximo probe reconecta do zero.
     readinessRedis?.disconnect();
     readinessRedis = null;
-    return {
-      status: "down",
-      latencyMs: Date.now() - startedAt,
-      error: error instanceof Error ? error.message : "unknown error",
-    };
+    console.error(
+      "[health] redis check failed:",
+      error instanceof Error ? error.message : error
+    );
+    return { status: "down", latencyMs: Date.now() - startedAt };
   }
 }
+
+// /health e /ready ficam fora do limiter global (/api/) — limite próprio evita
+// flood esgotar o pool do Postgres (cada probe faz SELECT 1 + PING).
+const healthLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many health checks, please try again later." },
+});
+app.use(["/health", "/ready"], healthLimiter);
 
 app.get("/health", async (_req: Request, res: Response) => {
   const database = await checkDatabase();
@@ -152,6 +201,22 @@ app.get("/ready", async (_req: Request, res: Response) => {
   });
 });
 
+// Lockout por CONTA (o limiter de IP não pega brute-force de senha que troca
+// de IP a cada request): 5 tentativas de login por e-mail a cada 15 min.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method !== "POST",
+  keyGenerator: (req) =>
+    `login:${((req.body as { email?: unknown } | undefined)?.email ?? "unknown")
+      .toString()
+      .toLowerCase()}`,
+  message: { error: "Too many login attempts for this account, please try again later." },
+});
+
+app.use(["/api/auth/login", "/api/v1/auth/login"], loginLimiter);
 app.use("/api/auth", authLimiter, authRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/rides", rideRouter);

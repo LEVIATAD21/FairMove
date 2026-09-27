@@ -30,7 +30,7 @@ ok "$code" "/ready $(jq -c . < "$B")"
 step "1) login do motorista seedado (driver@test.com)"
 code=$(req POST "$API/auth/login" "" '{"email":"driver@test.com","password":"Test123!"}')
 [[ "$code" == 200 ]] || fail "$code" "login motorista"
-DT=$(jqv .token); ok "$code" "token=${DT:0:32}..."
+DT=$(jqv .token); ok "$code" "token ok (${#DT} chars)"
 
 code=$(req GET "$API/drivers/me" "$DT")
 [[ "$code" == 200 ]] || fail "$code" "/drivers/me"

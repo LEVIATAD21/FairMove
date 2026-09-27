@@ -1,0 +1,1 @@
+ALTER TABLE "pricing_quotes" ADD COLUMN "user_id" text;

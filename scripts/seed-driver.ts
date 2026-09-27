@@ -216,6 +216,6 @@ async function main(): Promise<void> {
 main()
   .then(() => process.exit(0))
   .catch((error) => {
-    console.error("[seed-driver] FALHOU:", error);
+    console.error("[seed-driver] FALHOU:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     process.exit(1);
   });

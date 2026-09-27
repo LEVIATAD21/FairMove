@@ -12,14 +12,33 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgres://fairmove:fairmove_password@localhost:5432/fairmove
-      REDIS_URL: redis://localhost:6379
-      JWT_SECRET: fairmove_jwt_test_key
-      REFRESH_TOKEN_SECRET: fairmove_refresh_test_key
       NODE_ENV: test
+
+    services:
+      postgres:
+        image: postgres:15.19-alpine
+        env:
+          POSTGRES_USER: fairmove
+          POSTGRES_PASSWORD: fairmove_password
+          POSTGRES_DB: fairmove
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # Segredos de teste nunca hardcoded no workflow: gerados por execução
+      # (>=64 chars, distintos entre si), descartados ao fim do job.
+      - name: Generate ephemeral test secrets
+        run: |
+          echo "JWT_SECRET=$(openssl rand -base64 48)" >> "$GITHUB_ENV"
+          echo "REFRESH_TOKEN_SECRET=$(openssl rand -base64 48)" >> "$GITHUB_ENV"
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -40,6 +59,11 @@ jobs:
 
       - name: Run typecheck
         run: pnpm typecheck
+
+      # Testes de integração (ledger, auth, rides, WS) rodam contra o
+      # Postgres do serviço acima; schema aplicado por push.
+      - name: Apply database schema
+        run: pnpm db:push
 
       - name: Run tests
         run: pnpm test

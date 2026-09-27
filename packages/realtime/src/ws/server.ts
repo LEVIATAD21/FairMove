@@ -2,7 +2,7 @@ import type { Server as HttpServer } from "http";
 import type { Duplex } from "stream";
 import { WebSocketServer, type WebSocket, type RawData } from "ws";
 import { verify, TokenExpiredError, JsonWebTokenError } from "jsonwebtoken";
-import { db, rides, drivers } from "@fairmove/shared-db";
+import { db, rides, drivers, sessions } from "@fairmove/shared-db";
 import { eq } from "drizzle-orm";
 import { getJwtSecret, type JwtPayloadShape } from "../../../auth/src/middleware";
 import { isRefreshSessionBlacklisted } from "../../../auth/src/utils/blacklist";
@@ -21,6 +21,39 @@ import {
 
 /** Raio de broadcast do ride:requested para motoristas próximos (PostGIS). */
 const RIDE_REQUEST_RADIUS_KM = 5;
+
+/** Subprotocolo de handshake: o token vem aqui, NUNCA na query string. */
+const AUTH_SUBPROTOCOL = "fairmove.auth";
+
+/** Limite de handshakes por IP (o /ws escapa do rate limit do Express). */
+const HANDSHAKE_WINDOW_MS = 60_000;
+const HANDSHAKE_MAX_PER_WINDOW = 15;
+const handshakeBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function allowHandshake(ip: string): boolean {
+  const now = Date.now();
+  const bucket = handshakeBuckets.get(ip);
+  if (!bucket || bucket.resetAt <= now) {
+    if (handshakeBuckets.size > 10_000) handshakeBuckets.clear();
+    handshakeBuckets.set(ip, { count: 1, resetAt: now + HANDSHAKE_WINDOW_MS });
+    return true;
+  }
+  bucket.count += 1;
+  return bucket.count <= HANDSHAKE_MAX_PER_WINDOW;
+}
+
+/** Extrai um JWT dos subprotocolos oferecidos pelo client (Sec-WebSocket-Protocol). */
+export function tokenFromSubprotocols(header: string | string[] | undefined): string | null {
+  const raw = Array.isArray(header) ? header.join(",") : header;
+  if (!raw) return null;
+  for (const part of raw.split(",")) {
+    const proto = part.trim();
+    if (!proto || proto === AUTH_SUBPROTOCOL) continue;
+    // JWT compacto: header.payload.signature em base64url.
+    if (/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(proto)) return proto;
+  }
+  return null;
+}
 
 /** Status em que a corrida tem motorista e passageiro envolvidos. */
 const ACTIVE_RIDE_STATUSES = [
@@ -65,7 +98,10 @@ export interface RealtimeServer {
 /**
  * Anexa o WebSocket `/ws` ao servidor HTTP do Express.
  *
- * - Handshake autentica JWT (access token) e bloqueia sessão na blacklist;
+ * - Handshake autentica JWT (access token) via subprotocolo `fairmove.auth`
+ *   (a query string é recusada: token em URL vaza em logs de proxy/CDN);
+ * - além da blacklist Redis, a sessão precisa existir e estar viva na tabela
+ *   `sessions` (troca/reset de senha e DELETE /sessions/:id revogam por lá);
  * - eventos vêm do Redis Pub/Sub (`fairmove:events`) — escala horizontal:
  *   cada instância entrega apenas aos sockets locais;
  * - `ride:requested` é direcionado por PostGIS (ST_DWithin) aos motoristas
@@ -74,7 +110,11 @@ export interface RealtimeServer {
  */
 export function attachRealtimeServer(httpServer: HttpServer): RealtimeServer {
   const hub = new WsHub();
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({
+    noServer: true,
+    handleProtocols: (protocols) =>
+      protocols.has(AUTH_SUBPROTOCOL) ? AUTH_SUBPROTOCOL : false,
+  });
   const alive = new WeakMap<WebSocket, boolean>();
 
   async function authenticate(
@@ -82,9 +122,17 @@ export function attachRealtimeServer(httpServer: HttpServer): RealtimeServer {
   ): Promise<JwtPayloadShape | null> {
     if (!token) return null;
     try {
-      const payload = verify(token, getJwtSecret()) as JwtPayloadShape;
+      const payload = verify(token, getJwtSecret(), { algorithms: ["HS256"] }) as JwtPayloadShape;
       if (!payload.userId || !payload.sessionId) return null;
       if (await isRefreshSessionBlacklisted(payload.sessionId)) return null;
+      // Mesma garantia do requireAuth REST: sessão removida/expirada não abre WS
+      // (honra troca de senha, reset e revogação de sessão específica).
+      const session = await db
+        .select({ expiresAt: sessions.expiresAt })
+        .from(sessions)
+        .where(eq(sessions.id, payload.sessionId));
+      if (session.length === 0) return null;
+      if (session[0].expiresAt && session[0].expiresAt.getTime() < Date.now()) return null;
       return payload;
     } catch (error) {
       if (error instanceof TokenExpiredError || error instanceof JsonWebTokenError) {
@@ -94,13 +142,24 @@ export function attachRealtimeServer(httpServer: HttpServer): RealtimeServer {
     }
   }
 
-  httpServer.on("upgrade", (req, socket: Duplex, head) => {
+  httpServer.on("upgrade", (req, socket: Duplex & { remoteAddress?: string }, head) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname !== "/ws") {
       socket.destroy();
       return;
     }
-    const token = url.searchParams.get("token");
+
+    const clientIp = socket.remoteAddress ?? "unknown";
+    if (!allowHandshake(clientIp)) {
+      socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    // A query string é deliberadamente ignorada: `?token=` já estaria gravado
+    // em logs de acesso/CDN. A fonte única do token é o subprotocolo.
+    const token = tokenFromSubprotocols(req.headers["sec-websocket-protocol"]);
+
     authenticate(token)
       .then((payload) => {
         if (!payload) {
@@ -228,7 +287,7 @@ export function attachRealtimeServer(httpServer: HttpServer): RealtimeServer {
         });
       }
     } catch (error) {
-      console.error("[realtime] client message error:", error);
+      console.error("[realtime] client message error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     }
   }
 
@@ -271,7 +330,7 @@ export function attachRealtimeServer(httpServer: HttpServer): RealtimeServer {
           originalPrice: ride ? Math.round(Number(ride.finalPassengerPrice)) / 100 : null,
         })
       );
-    })().catch((error) => console.error("[realtime] RideRequested error:", error));
+    })().catch((error) => console.error("[realtime] RideRequested error:", error instanceof Error ? (error.stack ?? error.message) : String(error)));
   });
 
   eventSubscriber.on("DriverMatched", (event: RideEvent) => {
@@ -288,7 +347,7 @@ export function attachRealtimeServer(httpServer: HttpServer): RealtimeServer {
           vehiclePlate: event.vehiclePlate,
         })
       );
-    })().catch((error) => console.error("[realtime] DriverMatched error:", error));
+    })().catch((error) => console.error("[realtime] DriverMatched error:", error instanceof Error ? (error.stack ?? error.message) : String(error)));
   });
 
   const statusEvents = new Set([
@@ -314,13 +373,13 @@ export function attachRealtimeServer(httpServer: HttpServer): RealtimeServer {
                   : (event as { status?: string }).status ?? "UNKNOWN";
         await notifyRideParticipants(event.rideId, "ride:status", { status });
       })().catch((error) =>
-        console.error(`[realtime] ${eventType} error:`, error)
+        console.error(`[realtime] ${eventType} error:`, error instanceof Error ? (error.stack ?? error.message) : String(error))
       );
     });
   }
 
   eventSubscriber.startListening().catch((error) => {
-    console.error("[realtime] subscriber start error:", error);
+    console.error("[realtime] subscriber start error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
   });
 
   // ---- heartbeat (remove sockets zumbis) ----------------------------------

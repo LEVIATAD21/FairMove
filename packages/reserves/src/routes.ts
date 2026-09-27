@@ -27,7 +27,7 @@ function handleError(res: Response, error: unknown): void {
     res.status(409).json({ error: error.message });
     return;
   }
-  console.error("Reserve error:", error);
+  console.error("Reserve error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
   res.status(500).json({ error: "Internal server error" });
 }
 

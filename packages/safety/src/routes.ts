@@ -49,7 +49,7 @@ router.post("/sos", requireAuth, validateBody(SosSchema), async (req: Request, r
 
     return res.status(201).json({ message: "SOS alert triggered", eventId });
   } catch (error) {
-    console.error("SOS error:", error);
+    console.error("SOS error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -70,7 +70,7 @@ router.get("/events/:rideId", requireAuth, async (req: Request, res: Response) =
 
     return res.json(events);
   } catch (error) {
-    console.error("Get safety events error:", error);
+    console.error("Get safety events error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -99,7 +99,7 @@ router.post("/trusted-contacts", requireAuth, validateBody(TrustContactSchema), 
 
     return res.status(201).json({ message: "Trusted contact added", id });
   } catch (error) {
-    console.error("Add trusted contact error:", error);
+    console.error("Add trusted contact error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -118,7 +118,7 @@ router.get("/trusted-contacts/:userId", requireAuth, async (req: Request, res: R
 
     return res.json(contacts);
   } catch (error) {
-    console.error("Get trusted contacts error:", error);
+    console.error("Get trusted contacts error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -161,7 +161,7 @@ router.post("/incidents", requireAuth, validateBody(IncidentSchema), async (req:
 
     return res.status(201).json({ message: "Incident reported", id });
   } catch (error) {
-    console.error("Report incident error:", error);
+    console.error("Report incident error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -182,7 +182,7 @@ router.get("/incidents/:rideId", requireAuth, async (req: Request, res: Response
 
     return res.json(incidentList);
   } catch (error) {
-    console.error("Get incidents error:", error);
+    console.error("Get incidents error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -205,7 +205,7 @@ router.post("/trip-codes", requireAuth, validateBody(TripCodeSchema), async (req
 
     return res.status(201).json({ code, rideId });
   } catch (error) {
-    console.error("Generate trip code error:", error);
+    console.error("Generate trip code error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -233,7 +233,7 @@ router.post("/trip-codes/verify", requireAuth, validateBody(TripCodeVerifySchema
 
     return res.json({ code, verified: true });
   } catch (error) {
-    console.error("Verify trip code error:", error);
+    console.error("Verify trip code error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });

@@ -66,7 +66,8 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
     let payload: JwtPayloadShape;
     try {
-      payload = verify(token, getJwtSecret()) as JwtPayloadShape;
+      // Algoritmo fixo por policy: nenhum header `alg` escolhido pelo cliente.
+      payload = verify(token, getJwtSecret(), { algorithms: ["HS256"] }) as JwtPayloadShape;
     } catch (err) {
       if (err instanceof TokenExpiredError) {
         res.status(401).json({ error: "Token expired" });

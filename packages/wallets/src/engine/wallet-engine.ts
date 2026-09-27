@@ -78,17 +78,61 @@ async function findByIdempotencyKey(exec: Exec, key: string) {
   return rows.length > 0 ? rows[0] : null;
 }
 
+function isUniqueViolation(error: unknown): boolean {
+  return (error as { code?: string } | null)?.code === "23505";
+}
+
 /**
  * Carteira com livro-razão de entrada dupla.
  *
  * Invariantes:
  * - valores internos sempre em centavos (inteiros);
  * - débito é atômico e nunca deixa o saldo negativo (fundo insuficiente → erro);
- * - todas as escritas (saldo + transação + entrada do livro) ocorrem na mesma
- *   transação de banco;
- * - `idempotencyKey` evita lançamentos duplicados.
+ * - todas as escritas (saldo + transação + entrada do livro) ocorrem na MESMA
+ *   transação de banco (`withTransaction`) — crash entre elas não existe;
+ * - `idempotencyKey` é checado DENTRO da transação e tem UNIQUE no banco:
+ *   corrida de duas chamadas com a mesma chave → a segunda recebe
+ *   DuplicateOperationError e o rollback desfaz qualquer saldo tocado.
  */
 export class WalletEngine {
+  /**
+   * Garante atomicidade saldo+ledger. Se o chamador já está dentro de uma
+   * transação do Drizzle (reserves/settlement passam `tx`), reaproveita —
+   * nunca aninhamos; caso contrário abrimos uma transação nova.
+   */
+  private async withTransaction<T>(exec: Exec, fn: (tx: Exec) => Promise<T>): Promise<T> {
+    if (exec !== db) return fn(exec);
+    return db.transaction((tx) => fn(tx));
+  }
+
+  /** Deve ser chamado DENTRO da transação (a checagem fora é TOCTOU). */
+  private async assertIdempotency(tx: Exec, key: string | undefined): Promise<void> {
+    if (!key) return;
+    const existing = await findByIdempotencyKey(tx, key);
+    if (existing) throw new DuplicateOperationError(existing.id);
+  }
+
+  /**
+   * Insert da transação do ledger com tratamento de corrida: se outra
+   * requisição já commitou a mesma idempotencyKey (UNIQUE), lançamos
+   * DuplicateOperationError e o rollback desfaz o UPDATE de saldo desta tx.
+   */
+  private async insertLedgerTransaction(
+    tx: Exec,
+    values: (typeof ledger_transactions.$inferInsert)
+  ): Promise<void> {
+    try {
+      await tx.insert(ledger_transactions).values(values);
+    } catch (error) {
+      const key = values.idempotencyKey ?? undefined;
+      if (isUniqueViolation(error) && key) {
+        const existing = await findByIdempotencyKey(tx, key);
+        throw new DuplicateOperationError(existing?.id ?? values.id ?? uuidv4());
+      }
+      throw error;
+    }
+  }
+
   async getWallet(userId: string, exec: Exec = db) {
     const wallet = await exec.select().from(wallets).where(eq(wallets.userId, userId));
     return wallet.length > 0 ? wallet[0] : null;
@@ -134,11 +178,7 @@ export class WalletEngine {
     return wallet ? Number(wallet.reserve_balance) : 0;
   }
 
-  private async findByIdempotencyKey(exec: Exec, key: string) {
-    return findByIdempotencyKey(exec, key);
-  }
-
-  /** Crédito em centavos. */
+  /** Crédito em centavos — atômico (saldo + ledger na mesma transação). */
   async creditCents(
     userId: string,
     cents: number,
@@ -147,62 +187,61 @@ export class WalletEngine {
   ): Promise<WalletOperationResult> {
     if (!Number.isInteger(cents) || cents <= 0) throw new InvalidAmountError();
 
-    if (options.idempotencyKey) {
-      const existing = await this.findByIdempotencyKey(exec, options.idempotencyKey);
-      if (existing) throw new DuplicateOperationError(existing.id);
-    }
+    return this.withTransaction(exec, async (tx) => {
+      await this.assertIdempotency(tx, options.idempotencyKey);
 
-    const wallet = await this.ensureWallet(userId, exec);
+      const wallet = await this.ensureWallet(userId, tx);
 
-    const updated = await exec
-      .update(wallets)
-      .set({
-        available_balance: sql`${wallets.available_balance} + ${cents}`,
-        updated_at: new Date(),
-      })
-      .where(eq(wallets.id, wallet.id))
-      .returning();
+      const updated = await tx
+        .update(wallets)
+        .set({
+          available_balance: sql`${wallets.available_balance} + ${cents}`,
+          updated_at: new Date(),
+        })
+        .where(eq(wallets.id, wallet.id))
+        .returning();
 
-    const after = updated[0];
-    const transactionId = uuidv4();
-    const entryId = uuidv4();
+      const after = updated[0];
+      const transactionId = uuidv4();
+      const entryId = uuidv4();
 
-    await exec.insert(ledger_transactions).values({
-      id: transactionId,
-      walletId: wallet.id,
-      transactionType: "credit",
-      amount: cents,
-      currency: "BRL",
-      description: options.description || "Wallet credit",
-      metadata: JSON.stringify(options.metadata || {}),
-      status: "completed",
-      idempotencyKey: options.idempotencyKey ?? null,
+      await this.insertLedgerTransaction(tx, {
+        id: transactionId,
+        walletId: wallet.id,
+        transactionType: "credit",
+        amount: cents,
+        currency: "BRL",
+        description: options.description || "Wallet credit",
+        metadata: JSON.stringify(options.metadata || {}),
+        status: "completed",
+        idempotencyKey: options.idempotencyKey ?? null,
+      });
+
+      const totalAfter =
+        Number(after.available_balance) +
+        Number(after.pending_balance) +
+        Number(after.reserve_balance);
+
+      await tx.insert(ledger_entries).values({
+        id: entryId,
+        transactionId,
+        walletId: wallet.id,
+        entryType: "credit",
+        amount: cents,
+        balanceAfter: totalAfter,
+      });
+
+      return {
+        transactionId,
+        entryId,
+        newAvailableBalance: Number(after.available_balance),
+        newPendingBalance: Number(after.pending_balance),
+        newReserveBalance: Number(after.reserve_balance),
+      };
     });
-
-    const totalAfter =
-      Number(after.available_balance) +
-      Number(after.pending_balance) +
-      Number(after.reserve_balance);
-
-    await exec.insert(ledger_entries).values({
-      id: entryId,
-      transactionId,
-      walletId: wallet.id,
-      entryType: "credit",
-      amount: cents,
-      balanceAfter: totalAfter,
-    });
-
-    return {
-      transactionId,
-      entryId,
-      newAvailableBalance: Number(after.available_balance),
-      newPendingBalance: Number(after.pending_balance),
-      newReserveBalance: Number(after.reserve_balance),
-    };
   }
 
-  /** Débito em centavos — atômico e sem saldo negativo. */
+  /** Débito em centavos — atômico, sem saldo negativo, ledger na mesma tx. */
   async debitCents(
     userId: string,
     cents: number,
@@ -211,63 +250,62 @@ export class WalletEngine {
   ): Promise<WalletOperationResult> {
     if (!Number.isInteger(cents) || cents <= 0) throw new InvalidAmountError();
 
-    if (options.idempotencyKey) {
-      const existing = await this.findByIdempotencyKey(exec, options.idempotencyKey);
-      if (existing) throw new DuplicateOperationError(existing.id);
-    }
+    return this.withTransaction(exec, async (tx) => {
+      await this.assertIdempotency(tx, options.idempotencyKey);
 
-    const wallet = await this.ensureWallet(userId, exec);
+      const wallet = await this.ensureWallet(userId, tx);
 
-    const updated = await exec
-      .update(wallets)
-      .set({
-        available_balance: sql`${wallets.available_balance} - ${cents}`,
-        updated_at: new Date(),
-      })
-      .where(and(eq(wallets.id, wallet.id), sql`${wallets.available_balance} >= ${cents}`))
-      .returning();
+      const updated = await tx
+        .update(wallets)
+        .set({
+          available_balance: sql`${wallets.available_balance} - ${cents}`,
+          updated_at: new Date(),
+        })
+        .where(and(eq(wallets.id, wallet.id), sql`${wallets.available_balance} >= ${cents}`))
+        .returning();
 
-    if (updated.length === 0) {
-      throw new InsufficientFundsError();
-    }
+      if (updated.length === 0) {
+        throw new InsufficientFundsError();
+      }
 
-    const after = updated[0];
-    const transactionId = uuidv4();
-    const entryId = uuidv4();
+      const after = updated[0];
+      const transactionId = uuidv4();
+      const entryId = uuidv4();
 
-    await exec.insert(ledger_transactions).values({
-      id: transactionId,
-      walletId: wallet.id,
-      transactionType: "debit",
-      amount: cents,
-      currency: "BRL",
-      description: options.description || "Wallet debit",
-      metadata: JSON.stringify(options.metadata || {}),
-      status: "completed",
-      idempotencyKey: options.idempotencyKey ?? null,
+      await this.insertLedgerTransaction(tx, {
+        id: transactionId,
+        walletId: wallet.id,
+        transactionType: "debit",
+        amount: cents,
+        currency: "BRL",
+        description: options.description || "Wallet debit",
+        metadata: JSON.stringify(options.metadata || {}),
+        status: "completed",
+        idempotencyKey: options.idempotencyKey ?? null,
+      });
+
+      const totalAfter =
+        Number(after.available_balance) +
+        Number(after.pending_balance) +
+        Number(after.reserve_balance);
+
+      await tx.insert(ledger_entries).values({
+        id: entryId,
+        transactionId,
+        walletId: wallet.id,
+        entryType: "debit",
+        amount: cents,
+        balanceAfter: totalAfter,
+      });
+
+      return {
+        transactionId,
+        entryId,
+        newAvailableBalance: Number(after.available_balance),
+        newPendingBalance: Number(after.pending_balance),
+        newReserveBalance: Number(after.reserve_balance),
+      };
     });
-
-    const totalAfter =
-      Number(after.available_balance) +
-      Number(after.pending_balance) +
-      Number(after.reserve_balance);
-
-    await exec.insert(ledger_entries).values({
-      id: entryId,
-      transactionId,
-      walletId: wallet.id,
-      entryType: "debit",
-      amount: cents,
-      balanceAfter: totalAfter,
-    });
-
-    return {
-      transactionId,
-      entryId,
-      newAvailableBalance: Number(after.available_balance),
-      newPendingBalance: Number(after.pending_balance),
-      newReserveBalance: Number(after.reserve_balance),
-    };
   }
 
   /**
@@ -282,57 +320,56 @@ export class WalletEngine {
   ): Promise<WalletOperationResult> {
     if (!Number.isInteger(cents) || cents <= 0) throw new InvalidAmountError();
 
-    if (options.idempotencyKey) {
-      const existing = await this.findByIdempotencyKey(exec, options.idempotencyKey);
-      if (existing) throw new DuplicateOperationError(existing.id);
-    }
+    return this.withTransaction(exec, async (tx) => {
+      await this.assertIdempotency(tx, options.idempotencyKey);
 
-    const wallet = await this.ensureWallet(userId, exec);
+      const wallet = await this.ensureWallet(userId, tx);
 
-    const updated = await exec
-      .update(wallets)
-      .set({
-        reserve_balance: sql`${wallets.reserve_balance} + ${cents}`,
-        updated_at: new Date(),
-      })
-      .where(eq(wallets.id, wallet.id))
-      .returning();
+      const updated = await tx
+        .update(wallets)
+        .set({
+          reserve_balance: sql`${wallets.reserve_balance} + ${cents}`,
+          updated_at: new Date(),
+        })
+        .where(eq(wallets.id, wallet.id))
+        .returning();
 
-    const after = updated[0];
-    const transactionId = uuidv4();
-    const entryId = uuidv4();
+      const after = updated[0];
+      const transactionId = uuidv4();
+      const entryId = uuidv4();
 
-    await exec.insert(ledger_transactions).values({
-      id: transactionId,
-      walletId: wallet.id,
-      transactionType: "reserve_credit",
-      amount: cents,
-      currency: "BRL",
-      description: options.description || "Reserve credit",
-      metadata: JSON.stringify(options.metadata || {}),
-      status: "completed",
-      idempotencyKey: options.idempotencyKey ?? null,
+      await this.insertLedgerTransaction(tx, {
+        id: transactionId,
+        walletId: wallet.id,
+        transactionType: "reserve_credit",
+        amount: cents,
+        currency: "BRL",
+        description: options.description || "Reserve credit",
+        metadata: JSON.stringify(options.metadata || {}),
+        status: "completed",
+        idempotencyKey: options.idempotencyKey ?? null,
+      });
+
+      await tx.insert(ledger_entries).values({
+        id: entryId,
+        transactionId,
+        walletId: wallet.id,
+        entryType: "credit",
+        amount: cents,
+        balanceAfter:
+          Number(after.available_balance) +
+          Number(after.pending_balance) +
+          Number(after.reserve_balance),
+      });
+
+      return {
+        transactionId,
+        entryId,
+        newAvailableBalance: Number(after.available_balance),
+        newPendingBalance: Number(after.pending_balance),
+        newReserveBalance: Number(after.reserve_balance),
+      };
     });
-
-    await exec.insert(ledger_entries).values({
-      id: entryId,
-      transactionId,
-      walletId: wallet.id,
-      entryType: "credit",
-      amount: cents,
-      balanceAfter:
-        Number(after.available_balance) +
-        Number(after.pending_balance) +
-        Number(after.reserve_balance),
-    });
-
-    return {
-      transactionId,
-      entryId,
-      newAvailableBalance: Number(after.available_balance),
-      newPendingBalance: Number(after.pending_balance),
-      newReserveBalance: Number(after.reserve_balance),
-    };
   }
 
   /**
@@ -362,55 +399,59 @@ export class WalletEngine {
   ): Promise<WalletOperationResult> {
     if (!Number.isInteger(cents) || cents <= 0) throw new InvalidAmountError();
 
-    const wallet = await this.ensureWallet(userId, exec);
+    return this.withTransaction(exec, async (tx) => {
+      await this.assertIdempotency(tx, options.idempotencyKey);
 
-    const updated = await exec
-      .update(wallets)
-      .set({
-        available_balance: sql`${wallets.available_balance} - ${cents}`,
-        reserve_balance: sql`${wallets.reserve_balance} + ${cents}`,
-        updated_at: new Date(),
-      })
-      .where(and(eq(wallets.id, wallet.id), sql`${wallets.available_balance} >= ${cents}`))
-      .returning();
+      const wallet = await this.ensureWallet(userId, tx);
 
-    if (updated.length === 0) throw new InsufficientFundsError();
+      const updated = await tx
+        .update(wallets)
+        .set({
+          available_balance: sql`${wallets.available_balance} - ${cents}`,
+          reserve_balance: sql`${wallets.reserve_balance} + ${cents}`,
+          updated_at: new Date(),
+        })
+        .where(and(eq(wallets.id, wallet.id), sql`${wallets.available_balance} >= ${cents}`))
+        .returning();
 
-    const after = updated[0];
-    const transactionId = uuidv4();
-    const entryId = uuidv4();
+      if (updated.length === 0) throw new InsufficientFundsError();
 
-    await exec.insert(ledger_transactions).values({
-      id: transactionId,
-      walletId: wallet.id,
-      transactionType: "reserve_contribution",
-      amount: cents,
-      currency: "BRL",
-      description: options.description || "Reserve contribution",
-      metadata: JSON.stringify(options.metadata || {}),
-      status: "completed",
-      idempotencyKey: options.idempotencyKey ?? null,
+      const after = updated[0];
+      const transactionId = uuidv4();
+      const entryId = uuidv4();
+
+      await this.insertLedgerTransaction(tx, {
+        id: transactionId,
+        walletId: wallet.id,
+        transactionType: "reserve_contribution",
+        amount: cents,
+        currency: "BRL",
+        description: options.description || "Reserve contribution",
+        metadata: JSON.stringify(options.metadata || {}),
+        status: "completed",
+        idempotencyKey: options.idempotencyKey ?? null,
+      });
+
+      await tx.insert(ledger_entries).values({
+        id: entryId,
+        transactionId,
+        walletId: wallet.id,
+        entryType: "debit",
+        amount: cents,
+        balanceAfter:
+          Number(after.available_balance) +
+          Number(after.pending_balance) +
+          Number(after.reserve_balance),
+      });
+
+      return {
+        transactionId,
+        entryId,
+        newAvailableBalance: Number(after.available_balance),
+        newPendingBalance: Number(after.pending_balance),
+        newReserveBalance: Number(after.reserve_balance),
+      };
     });
-
-    await exec.insert(ledger_entries).values({
-      id: entryId,
-      transactionId,
-      walletId: wallet.id,
-      entryType: "debit",
-      amount: cents,
-      balanceAfter:
-        Number(after.available_balance) +
-        Number(after.pending_balance) +
-        Number(after.reserve_balance),
-    });
-
-    return {
-      transactionId,
-      entryId,
-      newAvailableBalance: Number(after.available_balance),
-      newPendingBalance: Number(after.pending_balance),
-      newReserveBalance: Number(after.reserve_balance),
-    };
   }
 
   /** Move valor de `reserve` para `available` na carteira do usuário. */
@@ -422,55 +463,59 @@ export class WalletEngine {
   ): Promise<WalletOperationResult> {
     if (!Number.isInteger(cents) || cents <= 0) throw new InvalidAmountError();
 
-    const wallet = await this.ensureWallet(userId, exec);
+    return this.withTransaction(exec, async (tx) => {
+      await this.assertIdempotency(tx, options.idempotencyKey);
 
-    const updated = await exec
-      .update(wallets)
-      .set({
-        available_balance: sql`${wallets.available_balance} + ${cents}`,
-        reserve_balance: sql`${wallets.reserve_balance} - ${cents}`,
-        updated_at: new Date(),
-      })
-      .where(and(eq(wallets.id, wallet.id), sql`${wallets.reserve_balance} >= ${cents}`))
-      .returning();
+      const wallet = await this.ensureWallet(userId, tx);
 
-    if (updated.length === 0) throw new InsufficientReserveError();
+      const updated = await tx
+        .update(wallets)
+        .set({
+          available_balance: sql`${wallets.available_balance} + ${cents}`,
+          reserve_balance: sql`${wallets.reserve_balance} - ${cents}`,
+          updated_at: new Date(),
+        })
+        .where(and(eq(wallets.id, wallet.id), sql`${wallets.reserve_balance} >= ${cents}`))
+        .returning();
 
-    const after = updated[0];
-    const transactionId = uuidv4();
-    const entryId = uuidv4();
+      if (updated.length === 0) throw new InsufficientReserveError();
 
-    await exec.insert(ledger_transactions).values({
-      id: transactionId,
-      walletId: wallet.id,
-      transactionType: "reserve_payout",
-      amount: cents,
-      currency: "BRL",
-      description: options.description || "Reserve payout",
-      metadata: JSON.stringify(options.metadata || {}),
-      status: "completed",
-      idempotencyKey: options.idempotencyKey ?? null,
+      const after = updated[0];
+      const transactionId = uuidv4();
+      const entryId = uuidv4();
+
+      await this.insertLedgerTransaction(tx, {
+        id: transactionId,
+        walletId: wallet.id,
+        transactionType: "reserve_payout",
+        amount: cents,
+        currency: "BRL",
+        description: options.description || "Reserve payout",
+        metadata: JSON.stringify(options.metadata || {}),
+        status: "completed",
+        idempotencyKey: options.idempotencyKey ?? null,
+      });
+
+      await tx.insert(ledger_entries).values({
+        id: entryId,
+        transactionId,
+        walletId: wallet.id,
+        entryType: "credit",
+        amount: cents,
+        balanceAfter:
+          Number(after.available_balance) +
+          Number(after.pending_balance) +
+          Number(after.reserve_balance),
+      });
+
+      return {
+        transactionId,
+        entryId,
+        newAvailableBalance: Number(after.available_balance),
+        newPendingBalance: Number(after.pending_balance),
+        newReserveBalance: Number(after.reserve_balance),
+      };
     });
-
-    await exec.insert(ledger_entries).values({
-      id: entryId,
-      transactionId,
-      walletId: wallet.id,
-      entryType: "credit",
-      amount: cents,
-      balanceAfter:
-        Number(after.available_balance) +
-        Number(after.pending_balance) +
-        Number(after.reserve_balance),
-    });
-
-    return {
-      transactionId,
-      entryId,
-      newAvailableBalance: Number(after.available_balance),
-      newPendingBalance: Number(after.pending_balance),
-      newReserveBalance: Number(after.reserve_balance),
-    };
   }
 
   /** Compatibilidade com a API antiga (valores em BRL). */

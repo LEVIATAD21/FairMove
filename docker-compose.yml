@@ -9,8 +9,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # Bind em 127.0.0.1: acessível só para o host (dev local), nunca exposto
+    # na rede. Em produção use a porta interna do compose (sem "ports:").
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U fairmove -d fairmove"]
       interval: 5s
@@ -21,12 +23,17 @@ services:
     image: redis:7-alpine
     container_name: fairmove-redis
     restart: always
+    # requirepass: o Pub/Sub do realtime processa qualquer PUBLISH do canal
+    # fairmove:events — sem senha, qualquer host alcançava o socket.
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -42,7 +49,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}@redis:6379
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       JWT_EXPIRES_IN: 15m
       REFRESH_TOKEN_SECRET: ${REFRESH_TOKEN_SECRET:?Set REFRESH_TOKEN_SECRET in .env}
@@ -50,6 +57,9 @@ services:
       NODE_ENV: production
       PORT: 3000
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      # Sem proxy reverso nesta topologia: manter TRUST_PROXY vazio/false
+      # (com "1" sem proxy, X-Forwarded-For forja o IP e burla o rate limit).
+      TRUST_PROXY: ${TRUST_PROXY:-false}
     ports:
       - "3000:3000"
 

@@ -40,11 +40,11 @@ class EventScheduler {
           await recalculateLeaderboard(event.id);
           console.log(`[EventScheduler] Leaderboard do evento ${event.id} atualizado`);
         } catch (error) {
-          console.error(`[EventScheduler] Erro ao recalcular evento ${event.id}:`, error);
+          console.error(`[EventScheduler] Erro ao recalcular evento ${event.id}:`, error instanceof Error ? (error.stack ?? error.message) : String(error));
         }
       }
     } catch (error) {
-      console.error("[EventScheduler] Erro geral no recálculo:", error);
+      console.error("[EventScheduler] Erro geral no recálculo:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     }
   }
 

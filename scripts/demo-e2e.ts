@@ -101,9 +101,10 @@ class WsProbe {
   }
 
   static connect(token: string, label: string): Promise<WsProbe> {
-    const wsUrl = `${BASE.replace(/^http/, "ws")}/ws?token=${encodeURIComponent(token)}`;
+    const wsUrl = `${BASE.replace(/^http/, "ws")}/ws`;
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
+      // Token via subprotocolo — nunca na query string (vazaria nos logs).
+      const ws = new WebSocket(wsUrl, ["fairmove.auth", token]);
       const probe = new WsProbe(ws);
       const timer = setTimeout(
         () => reject(new Error(`${label}: timeout conectando ao /ws`)),

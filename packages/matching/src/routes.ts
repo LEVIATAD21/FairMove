@@ -79,15 +79,19 @@ router.post("/:rideId/match", requireAuth, async (req: Request, res: Response) =
       match,
     });
   } catch (error) {
-    console.error("Match driver error:", error);
+    console.error("Match driver error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Lista motoristas próximos (raio configurável)
+// Lista motoristas próximos (raio configurável).
+// Admin-only: a resposta expõe posição precisa (distance ~10 m) — para
+// qualquer autenticado permitia triangulação de qualquer motorista online
+// (conta nova + bisseção em lat/lng). Nenhum app consome esta rota.
 router.get(
   "/drivers/nearby",
   requireAuth,
+  requireRole("admin"),
   validateQuery(NearbyQuerySchema),
   async (req: Request, res: Response) => {
     try {
@@ -104,7 +108,7 @@ router.get(
 
       res.json({ drivers: nearbyDrivers });
     } catch (error) {
-      console.error("Get nearby drivers error:", error);
+      console.error("Get nearby drivers error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -129,7 +133,7 @@ router.post(
 
       res.json({ driverId: driver[0].id, lat, lng });
     } catch (error) {
-      console.error("Update driver location error:", error);
+      console.error("Update driver location error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -158,7 +162,7 @@ router.post(
 
       res.json({ driverId: driver[0].id, status, available: patch.available ?? driver[0].available });
     } catch (error) {
-      console.error("Update driver status error:", error);
+      console.error("Update driver status error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       res.status(500).json({ error: "Internal server error" });
     }
   }

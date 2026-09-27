@@ -29,7 +29,7 @@ function handleError(res: Response, error: unknown): void {
     });
     return;
   }
-  console.error("Wallet error:", error);
+  console.error("Wallet error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
   res.status(500).json({ error: "Internal server error" });
 }
 
@@ -68,7 +68,7 @@ router.get("/me/balance", requireAuth, async (req: Request, res: Response) => {
 });
 
 // Depósito — NÃO simula pagamento: sem gateway real configurado, 501 com docs.
-router.post("/deposit", (_req: Request, res: Response) => {
+router.post("/deposit", requireAuth, (_req: Request, res: Response) => {
   res.status(501).json({
     error: "payment_gateway_not_configured",
     message:

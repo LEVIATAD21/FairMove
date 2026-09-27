@@ -5,7 +5,9 @@ import { getSessionTokens } from "./session";
  * RealTimeClient WebSocket do motorista — transporte real para `/ws`.
  *
  * - URL deriva de EXPO_PUBLIC_API_URL (`http://host:3000/api/v1` → `ws://host:3000/ws`);
- * - JWT (access token) vai na query do handshake — o servidor valida e recusa 401;
+ * - JWT (access token) vai como Sec-WebSocket-Protocol (subprotocolo), jamais
+ *   na query string (URL com token vaza em logs de proxy/CDN/histórico);
+ *   o servidor valida e recusa 401;
  * - reconexão automática com backoff exponencial + jitter (1s → 30s);
  * - handlers por tipo de evento, com unsubscribe idiomático.
  * Sem polling: tudo que chega é push do servidor.
@@ -23,13 +25,13 @@ type WebSocketLike = {
   close(code?: number, reason?: string): void;
 };
 
-type WebSocketCtor = new (url: string) => WebSocketLike;
+type WebSocketCtor = new (url: string, protocols?: string[]) => WebSocketLike;
 
 const OPEN = 1;
 const MAX_BACKOFF_MS = 30_000;
 const BASE_BACKOFF_MS = 1_000;
 
-/** `http://host:3000/api/v1` → `ws://host:3000/ws` (handshake leva o token). */
+/** `http://host:3000/api/v1` → `ws://host:3000/ws` (token vai no subprotocolo). */
 export function wsEndpoint(apiBaseUrl: string = API_BASE_URL): string {
   const withoutApiSuffix = apiBaseUrl.replace(/\/+$/, "").replace(/\/api\/v1$/, "");
   return `${withoutApiSuffix.replace(/^http/, "ws")}/ws`;
@@ -95,11 +97,11 @@ export class RealTimeClient {
   }
 
   private openSocket(token: string): void {
-    const url = `${this.endpoint}?token=${encodeURIComponent(token)}`;
+    // Auth via subprotocol: o token nunca aparece na URL do handshake.
     const Ctor = (globalThis as { WebSocket?: WebSocketCtor }).WebSocket;
     if (!Ctor) return;
 
-    const socket = new Ctor(url);
+    const socket = new Ctor(this.endpoint, ["fairmove.auth", token]);
     this.ws = socket;
 
     socket.onopen = () => {

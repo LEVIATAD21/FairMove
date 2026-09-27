@@ -20,7 +20,7 @@ router.post("/risk/:userId", requireAuth, requireRole("admin"), async (req: Requ
 
     return res.json(result);
   } catch (error) {
-    console.error("Calculate user risk error:", error);
+    console.error("Calculate user risk error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -50,7 +50,7 @@ router.post("/event", requireAuth, requireRole("admin"), validateBody(FraudEvent
 
     return res.status(201).json({ message: "Evento de fraude registrado com sucesso" });
   } catch (error) {
-    console.error("Register fraud event error:", error);
+    console.error("Register fraud event error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -71,9 +71,15 @@ router.get("/score/:userId", requireAuth, async (req: Request, res: Response) =>
       return res.json({ hasScore: false });
     }
 
+    // Internals antifraude (heurísticas, limiares30/70/90) só para admin —
+    // para o próprio usuário, expor o mapa de regras ajuda a evadir detecção.
+    if (user.role !== "admin") {
+      const { calculationDetails: _details, ...publicScore } = existing[0];
+      return res.json({ hasScore: true, score: publicScore });
+    }
     return res.json({ hasScore: true, score: existing[0] });
   } catch (error) {
-    console.error("Get risk score error:", error);
+    console.error("Get risk score error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -94,9 +100,16 @@ router.get("/events/:userId", requireAuth, async (req: Request, res: Response) =
       .where(eq(fraud_events.userId, userId))
       .orderBy(desc(fraud_events.createdAt));
 
+    // metadata/description contêm os detalhes das heurísticas que geraram o
+    // evento — visíveis apenas para admin.
+    if (user.role !== "admin") {
+      return res.json(
+        events.map(({ metadata: _m, description: _d, ...safe }) => safe)
+      );
+    }
     return res.json(events);
   } catch (error) {
-    console.error("Get fraud events error:", error);
+    console.error("Get fraud events error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });

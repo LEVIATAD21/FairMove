@@ -68,7 +68,7 @@ export class EventSubscriber {
           handlers.forEach((handler) => handler(event));
         }
       } catch (error) {
-        console.error("Failed to handle event:", error);
+        console.error("Failed to handle event:", error instanceof Error ? (error.stack ?? error.message) : String(error));
       }
     });
   }

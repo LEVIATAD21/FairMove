@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { requireAuth, requireSelfOrRole } from "../../auth/src/middleware";
+import { requireAuth, requireRole, requireSelfOrRole } from "../../auth/src/middleware";
 import { subscriptionEngine } from "./engine/subscription-engine";
 
 const router = Router();
@@ -20,7 +20,7 @@ router.get("/:userId", requireAuth, requireSelfOrRole("userId", "admin"), async 
       subscription,
     });
   } catch (error) {
-    console.error("Get subscription error:", error);
+    console.error("Get subscription error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -34,7 +34,7 @@ router.post("/:userId/activate", requireAuth, requireSelfOrRole("userId", "admin
 
     return res.json(result);
   } catch (error) {
-    console.error("Activate subscription error:", error);
+    console.error("Activate subscription error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -56,7 +56,7 @@ router.post("/:userId/opt-out", requireAuth, requireSelfOrRole("userId", "admin"
 
     return res.json({ optedOutOfReserve: true, subscriptionId: result.subscriptionId });
   } catch (error) {
-    console.error("Opt-out reserve error:", error);
+    console.error("Opt-out reserve error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -70,7 +70,7 @@ router.post("/:userId/cancel", requireAuth, requireSelfOrRole("userId", "admin")
 
     return res.json(result);
   } catch (error) {
-    console.error("Cancel subscription error:", error);
+    console.error("Cancel subscription error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -84,13 +84,14 @@ router.post("/:userId/trial-status", requireAuth, requireSelfOrRole("userId", "a
 
     return res.json(result);
   } catch (error) {
-    console.error("Check trial status error:", error);
+    console.error("Check trial status error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Cobrança mensal — disparada apenas por administrador/sistema
-router.post("/:userId/charge", requireAuth, requireSelfOrRole("userId", "admin"), async (req: Request, res: Response) => {
+// Cobrança mensal — apenas administrador/sistema (o engine é idempotente por
+// período; expô-la a self-service permitiria manipular ciclos de cobrança).
+router.post("/:userId/charge", requireAuth, requireRole("admin"), async (req: Request, res: Response) => {
   try {
     const { userId } = req.params as { userId: string };
 
@@ -98,7 +99,7 @@ router.post("/:userId/charge", requireAuth, requireSelfOrRole("userId", "admin")
 
     return res.json(result);
   } catch (error) {
-    console.error("Charge monthly fee error:", error);
+    console.error("Charge monthly fee error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
   }
 });

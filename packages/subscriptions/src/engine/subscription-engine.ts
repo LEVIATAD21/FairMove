@@ -54,19 +54,28 @@ export class SubscriptionEngine {
     let subscriptionId: string;
 
     if (existing) {
+      // Anti-loop de trial: o trial é concedido UMA vez (subscriptionStartedAt
+      // já existe). Reativações (cancel → activate) preservam o trialEndsAt
+      // original — se já expirou, a cobrança volta a valer — e NUNCA estendem
+      // o ciclo de faturamento: um período já vencido permanece vencido para
+      // que checkTrialExpiration exija a cobrança mensal imediatamente.
+      const trialUsed = existing.subscriptionStartedAt != null;
+      const existingPeriodEnd = existing.currentPeriodEnd
+        ? new Date(existing.currentPeriodEnd)
+        : null;
+
       subscriptionId = existing.id;
       await db
         .update(subscriptions)
         .set({
           status: "active",
           plan: "pro",
-          trialEndsAt,
-          currentPeriodStart: now,
-          currentPeriodEnd,
+          trialEndsAt: trialUsed ? existing.trialEndsAt : trialEndsAt,
+          currentPeriodStart: trialUsed ? existing.currentPeriodStart : now,
+          currentPeriodEnd: trialUsed ? existingPeriodEnd : currentPeriodEnd,
           cancelAt: false,
           canceledAt: null,
           subscriptionStartedAt: existing.subscriptionStartedAt ?? now,
-          currentBillingCycle: 1,
           updatedAt: new Date(),
         })
         .where(eq(subscriptions.userId, userId));
