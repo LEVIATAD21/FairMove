@@ -16,6 +16,11 @@
     "declarationMap": false,
     "sourceMap": true,
     "moduleResolution": "node",
+    "ignoreDeprecations": "6.0",
+    "types": [
+      "node",
+      "jest"
+    ],
     "baseUrl": ".",
     "paths": {
       "@fairmove/shared-db": [
@@ -38,7 +43,8 @@
   },
   "include": [
     "packages/**/src",
-    "backend/src"
+    "backend/src",
+    "scripts/**/*"
   ],
   "exclude": [
     "node_modules",

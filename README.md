@@ -152,6 +152,24 @@ curl -X POST http://localhost:3000/api/v1/auth/register \
   -d '{"name":"Nome","email":"voce@exemplo.com","password":"SenhaForte#2026"}'
 ```
 
+### 5. Seed de motorista + E2E da corrida (PASSO 4)
+```bash
+pnpm build
+pnpm db:seed-driver      # idempotente: driver@test.com (role=driver, mês 1 trial)
+                         # + admin@fairmove.dev para funding via API
+pnpm e2e:ride            # fluxo completo contra o Postgres real
+```
+O E2E executa: login motorista → register passageiro → admin credita R$ 50
+(`POST /wallets/:id/credit`, ledger de dupla entrada) → cria corrida de
+R$ 14,62 (pricing real, 2,3 km) → aceita → `DRIVER_ARRIVING → … → IN_PROGRESS`
+→ `complete` com liquidação em transação única (`paymentMethod: "wallet"`,
+sem gateway) → confere os saldos e o ledger no Postgres.
+Re-execuções são seguras (register cai em 409→login; funding usa chave de
+idempotência única por execução; corrida nova a cada rodada).
+
+Nota: o engine de pricing pula de R$ 14,53 para R$ 14,62 num intervalo de
+0,005 km (arredondamento do tempo) — não existe tarifa de R$ 14,56 sem cupom.
+
 ### Endpoints principais (v1)
 | Método | Rota | Observação |
 |---|---|---|
@@ -159,5 +177,9 @@ curl -X POST http://localhost:3000/api/v1/auth/register \
 | GET | `/api/v1/drivers/me` | perfil real do usuário |
 | GET | `/api/v1/wallets/me/balance` | saldo real (centavos) |
 | POST | `/api/v1/wallets/deposit` | **501** enquanto não houver gateway PIX real |
+| POST | `/api/v1/wallets/:userId/credit` | crédito manual (role=admin, ledger) |
+| POST | `/api/v1/rides` | cria corrida (preço calculado no backend) |
+| POST | `/api/v1/rides/:rideId/accept` \| `complete` | motorista aceita/conclui |
+| PATCH | `/api/v1/rides/:rideId/status` | avanço de estados da corrida |
 | GET | `/api/v1/rides/history/me` | histórico de corridas |
 | POST | `/api/v1/subscriptions/:id/opt-out` | opt-out irreversível da reserva |
