@@ -29,10 +29,12 @@ describe("FairMove League — tabela oficial de recompensas", () => {
     expect(coupon?.durationMonths).toBe(2);
   });
 
-  test("3º lugar: R$ 500 + cupom 25%", () => {
+  test("3º lugar: R$ 500 + cupom 25% por 2 meses", () => {
     const rewards = buildEventRewards(3);
     expect(rewards.find((r) => r.rewardType === "cash_prize")?.rewardValueCents).toBe(50_000);
-    expect(rewards.find((r) => r.rewardType === "discount_coupon")?.discountPercent).toBe(25);
+    const coupon = rewards.find((r) => r.rewardType === "discount_coupon");
+    expect(coupon?.discountPercent).toBe(25);
+    expect(coupon?.durationMonths).toBe(2);
   });
 
   test("4º lugar: R$ 200 + cupom 20%", () => {
@@ -47,6 +49,7 @@ describe("FairMove League — tabela oficial de recompensas", () => {
       expect(rewards).toHaveLength(1);
       expect(rewards[0].rewardType).toBe("discount_coupon");
       expect(rewards[0].discountPercent).toBe(20);
+      expect(rewards[0].durationMonths).toBe(1);
       expect(rewards[0].rewardValueCents).toBe(0);
     }
   });

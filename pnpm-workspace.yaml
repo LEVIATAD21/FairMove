@@ -13,3 +13,6 @@ minimumReleaseAgeExclude:
   - expo-constants@57.0.16
   - expo-font@57.0.2
   - expo@57.0.18
+
+overrides:
+  react: 19.2.3

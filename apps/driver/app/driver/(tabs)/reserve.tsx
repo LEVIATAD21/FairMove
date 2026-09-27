@@ -1,77 +1,98 @@
-import { StyleSheet, View } from "react-native";
-import { AppText, Card, MonogramWatermark, colors, spacing } from "@fairmove/ui";
+import { ScrollView, StyleSheet, View } from "react-native";
+import { AppText, Card, MonogramWatermark, colors, radius, spacing } from "@fairmove/ui";
+import {
+  RESERVE_GOAL_CENTS,
+  contributionLabel,
+  progressPercent,
+  reserveProgressLabel,
+} from "../../../src/logic/reserve";
+import { mockReserve } from "../../../src/services/mock";
 
 /**
- * Fair Reserve — "Reserva de Disciplina e Emergência":
- * carteira separada, bloqueada para saque imediato (resgate só em emergência
- * validada ou no desligamento). Mostra o plano progressivo de assinatura.
+ * Reserva de Disciplina e Emergência — saldo protegido, meta de R$ 1.000 e
+ * histórico de aportes mensais. Este valor é do motorista; saque apenas em
+ * emergência validada ou no desligamento.
  */
 export default function DriverReserve() {
+  const percent = progressPercent(mockReserve.balanceCents, mockReserve.goalCents);
+
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.screen} contentContainerStyle={styles.container}>
       <MonogramWatermark />
-      <AppText variant="title">Fair Reserve</AppText>
-      <AppText variant="caption">Reserva de Disciplina e Emergência</AppText>
+
+      <View style={styles.header}>
+        <AppText variant="title">Reserva de Disciplina e Emergência</AppText>
+        <AppText variant="caption">
+          Este valor é seu e está protegido para manutenção, emergências ou imprevistos.
+        </AppText>
+      </View>
 
       <Card variant="gold">
-        <AppText variant="caption">SALDO NA RESERVA</AppText>
+        <AppText variant="caption">SEU PROGRESSO</AppText>
         <AppText variant="display" color={colors.gold.DEFAULT}>
-          R$ 0,00
+          {reserveProgressLabel(mockReserve.balanceCents, mockReserve.goalCents)}
         </AppText>
+
         <View style={styles.progressTrack}>
-          <View style={styles.progressFill} />
+          <View style={[styles.progressFill, { width: `${percent}%` }]} />
         </View>
-        <AppText variant="caption">Meta: R$ 1.000,00 · 0% concluído</AppText>
+        <AppText variant="caption">{`${percent}% da meta concluída`}</AppText>
+
         <AppText variant="caption" color={colors.warning}>
-          Saque bloqueado — resgate em emergência validada ou no desligamento
+          Saque bloqueado — resgate em emergência validada ou no desligamento.
         </AppText>
       </Card>
 
       <Card>
         <AppText variant="caption" style={styles.section}>
-          SEU PLANO PROGRESSIVO
+          HISTÓRICO DE APORTES
         </AppText>
-        <AppText variant="bodyStrong" color={colors.success}>
-          Mês 1 · Trial — R$ 0,00
-        </AppText>
-        <AppText variant="caption">Primeiro mês grátis: opere livre, receba 100%.</AppText>
-
-        <AppText variant="bodyStrong" style={styles.planRow}>
-          Mês 2 — R$ 100,00
-        </AppText>
-        <AppText variant="caption">R$ 51,00 plataforma + R$ 49,00 para a sua reserva.</AppText>
-
-        <AppText variant="bodyStrong" style={styles.planRow}>
-          Mês 3 em diante — R$ 200,00 (teto)
-        </AppText>
-        <AppText variant="caption">R$ 130,00 plataforma + R$ 70,00 para a sua reserva.</AppText>
-
-        <AppText variant="bodyStrong" style={styles.planRow} color={colors.warning}>
-          Opt-out — R$ 150,00 fixos
-        </AppText>
+        {mockReserve.contributions.map((entry) => (
+          <View key={`${entry.month}-${entry.year}`} style={styles.contributionRow}>
+            <AppText variant="bodyStrong" color={colors.success}>
+              {contributionLabel(entry.cents, entry.month, entry.year, entry.note)}
+            </AppText>
+          </View>
+        ))}
         <AppText variant="caption">
-          Sair da reserva zera o aporte e mantém a mensalidade fixa para a plataforma.
+          Aportes mensais conforme seu ciclo: R$ 49,00 no mês 2 e R$ 70,00 do mês 3 em diante.
         </AppText>
       </Card>
-    </View>
+
+      <Card variant="solid">
+        <AppText variant="caption" color={colors.gold.DEFAULT} style={styles.section}>
+          COMO FUNCIONA
+        </AppText>
+        <AppText variant="body">• O dinheiro fica separado da sua carteira de saque.</AppText>
+        <AppText variant="body">• Rende conforme as regras do plano FairMove.</AppText>
+        <AppText variant="body">
+          • Emergências validadas liberam o resgate — ou você recebe tudo ao desligar.
+        </AppText>
+      </Card>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, gap: spacing.lg, padding: spacing.xl },
+  screen: { flex: 1, backgroundColor: colors.obsidian },
+  container: { gap: spacing.lg, padding: spacing.xl, paddingBottom: spacing.xxxl },
+  header: { gap: spacing.sm, marginTop: spacing.lg },
   section: { letterSpacing: 1.2, textTransform: "uppercase", marginBottom: spacing.xs },
-  planRow: { marginTop: spacing.md },
   progressTrack: {
-    height: 8,
-    borderRadius: 4,
+    height: 10,
+    borderRadius: radius.sm,
     backgroundColor: colors.graphite.raised,
     overflow: "hidden",
-    marginVertical: spacing.sm,
+    marginTop: spacing.sm,
   },
   progressFill: {
-    width: "0%",
     height: "100%",
     backgroundColor: colors.gold.DEFAULT,
-    borderRadius: 4,
+    borderRadius: radius.sm,
+  },
+  contributionRow: {
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.glass.border,
   },
 });

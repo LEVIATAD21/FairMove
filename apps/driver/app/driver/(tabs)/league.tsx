@@ -310,7 +310,7 @@ const styles = StyleSheet.create({
   metric: { alignItems: "center", gap: 2 },
   rewardPreview: { borderTopWidth: 1, borderTopColor: colors.glass.border, paddingTop: spacing.md, gap: spacing.sm },
   rewardBadges: { gap: spacing.sm },
-  badge: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: spacing.radius?.pill || 999 },
+  badge: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: 999 },
   badgeGold: { backgroundColor: colors.gold.DEFAULT },
   cinemaBtn: { marginTop: spacing.sm },
   lbCard: { gap: spacing.md },

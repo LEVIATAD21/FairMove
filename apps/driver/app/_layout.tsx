@@ -13,7 +13,16 @@ export default function RootLayout() {
           animation: "fade",
           contentStyle: { backgroundColor: colors.obsidian },
         }}
-      />
+      >
+        <Stack.Screen
+          name="ride-request-modal"
+          options={{
+            presentation: "transparentModal",
+            animation: "fade",
+            contentStyle: { backgroundColor: "transparent" },
+          }}
+        />
+      </Stack>
     </SafeAreaProvider>
   );
 }

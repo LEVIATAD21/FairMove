@@ -1,23 +1,35 @@
 {
-  "preset": "ts-jest",
-  "testEnvironment": "node",
-  "rootDir": ".",
-  "testMatch": [
-    "<rootDir>/tests/**/*.test.ts"
-  ],
-  "transform": {
-    "^.+\\.[t]sx?$": "ts-jest"
-  },
-  "moduleFileExtensions": [
-    "ts",
-    "js",
-    "json"
-  ],
-  "moduleNameMapper": {
-    "^@fairmove/shared-db$": "<rootDir>/packages/shared-db/src/index",
-    "^@fairmove/shared-types$": "<rootDir>/packages/shared-types/src/index",
-    "^@fairmove/validation$": "<rootDir>/packages/validation/src/index",
-    "^@fairmove/config$": "<rootDir>/packages/config/src/index",
-    "^@fairmove/ui$": "<rootDir>/packages/ui/src/index"
-  }
+  "projects": [
+    {
+      "displayName": "node",
+      "preset": "ts-jest",
+      "testEnvironment": "node",
+      "rootDir": ".",
+      "testMatch": ["<rootDir>/tests/**/*.test.ts"],
+      "transform": {
+        "^.+\\.[t]sx?$": "ts-jest"
+      },
+      "moduleFileExtensions": ["ts", "js", "json"],
+      "moduleNameMapper": {
+        "^@fairmove/shared-db$": "<rootDir>/packages/shared-db/src/index",
+        "^@fairmove/shared-types$": "<rootDir>/packages/shared-types/src/index",
+        "^@fairmove/validation$": "<rootDir>/packages/validation/src/index",
+        "^@fairmove/config$": "<rootDir>/packages/config/src/index",
+        "^@fairmove/ui$": "<rootDir>/packages/ui/src/index"
+      }
+    },
+    {
+      "displayName": "component",
+      "preset": "jest-expo",
+      "rootDir": ".",
+      "testMatch": ["<rootDir>/tests/**/*.test.tsx"],
+      "moduleNameMapper": {
+        "^@fairmove/shared-db$": "<rootDir>/packages/shared-db/src/index",
+        "^@fairmove/shared-types$": "<rootDir>/packages/shared-types/src/index",
+        "^@fairmove/validation$": "<rootDir>/packages/validation/src/index",
+        "^@fairmove/config$": "<rootDir>/packages/config/src/index",
+        "^@fairmove/ui$": "<rootDir>/packages/ui/src/index"
+      }
+    }
+  ]
 }

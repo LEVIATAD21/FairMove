@@ -21,7 +21,7 @@ import { walletEngine } from "../../../wallets/src/engine/wallet-engine";
  * |---------|--------------------|--------------------------------|
  * | 1º      | R$ 2.000,00        | 4× Cinema FairMove             |
  * | 2º      | R$ 1.000,00        | 50% off por 2 meses            |
- * | 3º      | R$ 500,00          | 25% off                        |
+ * | 3º      | R$ 500,00          | 25% off por 2 meses            |
  * | 4º      | R$ 200,00          | 20% off                        |
  * | 5º–10º  | —                  | 20% off                        |
  *
@@ -82,7 +82,7 @@ export function buildEventRewards(rank: number): RewardDefinition[] {
     case 2:
       return [CASH(100_000), COUPON(50, 2)];
     case 3:
-      return [CASH(50_000), COUPON(25, 1)];
+      return [CASH(50_000), COUPON(25, 2)];
     case 4:
       return [CASH(20_000), COUPON(20, 1)];
     case 5:
