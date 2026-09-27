@@ -4,6 +4,9 @@ import helmet from "helmet";
 import cors from "cors";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
+import { sql } from "drizzle-orm";
+import Redis from "ioredis";
+import { db } from "@fairmove/shared-db";
 import { authRouter } from "../../packages/auth/src/routes";
 import { usersRouter } from "../../packages/users/src/routes";
 import { rideRouter } from "../../packages/rides/src/routes";
@@ -68,8 +71,82 @@ const authLimiter = rateLimit({
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: false }));
 
-app.get("/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok", service: "fairmove-backend" });
+type DependencyCheck = {
+  status: "up" | "down" | "skipped";
+  latencyMs?: number;
+  error?: string;
+};
+
+/** Ping real no Postgres (SELECT 1) com latência medida. */
+async function checkDatabase(): Promise<DependencyCheck> {
+  const startedAt = Date.now();
+  try {
+    await db.execute(sql`SELECT 1`);
+    return { status: "up", latencyMs: Date.now() - startedAt };
+  } catch (error) {
+    return {
+      status: "down",
+      latencyMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : "unknown error",
+    };
+  }
+}
+
+let readinessRedis: Redis | null = null;
+
+/** PING real no Redis. Sem REDIS_URL, o check é "skipped" (não bloqueia readiness). */
+async function checkRedis(): Promise<DependencyCheck> {
+  const url = process.env.REDIS_URL;
+  if (!url) return { status: "skipped" };
+  const startedAt = Date.now();
+  try {
+    if (!readinessRedis) {
+      readinessRedis = new Redis(url, {
+        lazyConnect: true,
+        maxRetriesPerRequest: 1,
+        commandTimeout: 2000,
+      });
+      // Erros de conexão são reportados pelo corpo da resposta, nunca derrubam o processo.
+      readinessRedis.on("error", () => undefined);
+    }
+    if (readinessRedis.status === "wait") {
+      await readinessRedis.connect();
+    }
+    const reply = await readinessRedis.ping();
+    if (reply !== "PONG") throw new Error(`unexpected reply: ${String(reply)}`);
+    return { status: "up", latencyMs: Date.now() - startedAt };
+  } catch (error) {
+    // Descarta o cliente com estado quebrado; o próximo probe reconecta do zero.
+    readinessRedis?.disconnect();
+    readinessRedis = null;
+    return {
+      status: "down",
+      latencyMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : "unknown error",
+    };
+  }
+}
+
+app.get("/health", async (_req: Request, res: Response) => {
+  const database = await checkDatabase();
+  const ok = database.status === "up";
+  res.status(ok ? 200 : 503).json({
+    status: ok ? "ok" : "unavailable",
+    service: "fairmove-backend",
+    checks: { database },
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/ready", async (_req: Request, res: Response) => {
+  const [database, redis] = await Promise.all([checkDatabase(), checkRedis()]);
+  const ok = database.status === "up" && redis.status !== "down";
+  res.status(ok ? 200 : 503).json({
+    status: ok ? "ready" : "not_ready",
+    service: "fairmove-backend",
+    checks: { database, redis },
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.use("/api/auth", authLimiter, authRouter);
