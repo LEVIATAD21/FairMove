@@ -409,30 +409,59 @@ export async function generateCouponCode(campaignId: string): Promise<string> {
 
 /** Cancela os resgates de uma corrida (usado em cancelamento). */
 export async function releaseRedemptions(rideId: string): Promise<void> {
-  const redemptions = await db
-    .select()
-    .from(promotion_redemptions)
-    .where(eq(promotion_redemptions.rideId, rideId));
+  // BUG-F2: a liberação devolvia só o contador do CUPOM; o da CAMPANHA
+  // (uses_count) nunca era decrementado — cada corrida cancelada consumia
+  // 1 vaga da campanha para sempre e N cancelamentos esgotavam a campanha
+  // inteira mesmo com todos os cupons "vazios". Transação única devolve os
+  // dois contadores junto com o delete do resgate.
+  await db.transaction(async (tx) => {
+    const redemptions = await tx
+      .select()
+      .from(promotion_redemptions)
+      .where(eq(promotion_redemptions.rideId, rideId));
 
-  if (redemptions.length === 0) return;
+    if (redemptions.length === 0) return;
 
-  const couponIds: string[] = [
-    ...new Set(
-      redemptions
-        .map((r: { couponId: string | null }) => r.couponId)
-        .filter((id: string | null): id is string => Boolean(id))
-    ),
-  ];
+    const couponIds: string[] = [
+      ...new Set(
+        redemptions
+          .map((r: { couponId: string | null }) => r.couponId)
+          .filter((id: string | null): id is string => Boolean(id))
+      ),
+    ];
 
-  await db.delete(promotion_redemptions).where(eq(promotion_redemptions.rideId, rideId));
+    await tx.delete(promotion_redemptions).where(eq(promotion_redemptions.rideId, rideId));
 
-  if (couponIds.length > 0) {
-    await db
+    if (couponIds.length === 0) return;
+
+    await tx
       .update(coupons)
       .set({
         uses_count: sql`GREATEST(${coupons.uses_count} - 1, 0)`,
         times_used: sql`GREATEST(${coupons.times_used} - 1, 0)`,
       })
       .where(inArray(coupons.id, couponIds));
-  }
+
+    // Devolve também o slot da CAMPANHA alocado no resgate (via campaignId do cupom).
+    const couponRows = await tx
+      .select({ campaignId: coupons.campaignId })
+      .from(coupons)
+      .where(inArray(coupons.id, couponIds));
+    const campaignIds: string[] = [
+      ...new Set(
+        couponRows
+          .map((c: { campaignId: string | null }) => c.campaignId)
+          .filter((id: string | null): id is string => Boolean(id))
+      ),
+    ];
+    if (campaignIds.length > 0) {
+      await tx
+        .update(campaigns)
+        .set({
+          uses_count: sql`GREATEST(${campaigns.uses_count} - 1, 0)`,
+          updated_at: new Date(),
+        })
+        .where(inArray(campaigns.id, campaignIds));
+    }
+  });
 }
