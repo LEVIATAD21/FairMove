@@ -373,7 +373,12 @@ router.post(
 // Admin routes
 router.get("/admin/events", requireAuth, requireRole("admin"), async (req: Request, res: Response) => {
   try {
-    const allEvents = await db.select().from(events).orderBy(desc(events.createdAt));
+    const allEvents = await db
+      .select()
+      .from(events)
+      .orderBy(desc(events.createdAt))
+      // BUG-H3: resposta precisa ser bounded; 200 é o teto de listagens admin.
+      .limit(200);
     return res.json(allEvents);
   } catch (error) {
     console.error("Admin get events error:", error instanceof Error ? error.message : error);
