@@ -117,6 +117,10 @@ function normalizeDiscount(discountPercent: number | undefined): number {
  *
  * Retorna `0` quando ainda não há aprovação (`null`/inválida); caso contrário
  * `1` durante o primeiro mês, `2` após completar um mês completo, etc.
+ *
+ * BUG-B: o cálculo usa getters UTC — a data de aprovação é um instante global
+ * e o mês ativo NÃO pode mudar quando o servidor muda de fuso (getters locais
+ * faziam `2026-09-01T00:00Z` virar `2026-08-31` em America/Sao_Paulo).
  */
 export function resolveMonthsActive(
   subscriptionStartedAt: Date | string | null | undefined,
@@ -127,8 +131,9 @@ export function resolveMonthsActive(
   if (Number.isNaN(start.getTime())) return 0;
 
   let months =
-    (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
-  if (now.getDate() < start.getDate()) months -= 1;
+    (now.getUTCFullYear() - start.getUTCFullYear()) * 12 +
+    (now.getUTCMonth() - start.getUTCMonth());
+  if (now.getUTCDate() < start.getUTCDate()) months -= 1;
   if (months < 0) return 0;
 
   return months + 1;
