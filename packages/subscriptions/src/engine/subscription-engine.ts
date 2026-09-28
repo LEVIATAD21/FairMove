@@ -63,6 +63,14 @@ export class SubscriptionEngine {
       const existingPeriodEnd = existing.currentPeriodEnd
         ? new Date(existing.currentPeriodEnd)
         : null;
+      // Rebase do ciclo na reativação: o contador nunca fica ATRÁS do
+      // calendário (ex.: cancelado há meses → cobrar o mês ativo real) nem
+      // ATRÁS do que já foi cobrado (guarda contra regressão de tier).
+      const rebaseCycle =
+        Math.max(
+          resolveMonthsActive(existing.subscriptionStartedAt, now) || 0,
+          existing.currentBillingCycle || 0
+        ) || 1;
 
       subscriptionId = existing.id;
       await db
@@ -73,6 +81,7 @@ export class SubscriptionEngine {
           trialEndsAt: trialUsed ? existing.trialEndsAt : trialEndsAt,
           currentPeriodStart: trialUsed ? existing.currentPeriodStart : now,
           currentPeriodEnd: trialUsed ? existingPeriodEnd : currentPeriodEnd,
+          currentBillingCycle: trialUsed ? rebaseCycle : Math.max(existing.currentBillingCycle || 0, 1),
           cancelAt: false,
           canceledAt: null,
           subscriptionStartedAt: existing.subscriptionStartedAt ?? now,
@@ -253,9 +262,10 @@ export class SubscriptionEngine {
     }
 
     const chargeDate = new Date();
-    const now = new Date();
-    const monthsActive =
-      resolveMonthsActive(sub.subscriptionStartedAt, now) || sub.currentBillingCycle || 1;
+    // BUG-A: o tier é o CICLO CONTADO no estado da assinatura (1 = trial,
+    // 2 = R$100, 3+ = R$200). O calendário do dia do disparo NÃO decide a
+    // regra: atraso de job/admin não pode subir a taxa (R$100 → R$200).
+    const monthsActive = sub.currentBillingCycle || 1;
     const discountPercent = await this.resolveActiveDiscountPercent(userId, chargeDate);
     const fee = calculateMonthlyFee({
       monthsActive,
@@ -270,7 +280,7 @@ export class SubscriptionEngine {
         .set({
           currentPeriodStart: chargeDate,
           currentPeriodEnd: new Date(chargeDate.getTime() + 30 * 24 * 60 * 60 * 1000),
-          currentBillingCycle: monthsActive,
+          currentBillingCycle: monthsActive + 1,
           updatedAt: new Date(),
         })
         .where(eq(subscriptions.id, sub.id));
@@ -339,13 +349,13 @@ export class SubscriptionEngine {
           reserveBalance = reserveMove.newReserveBalance;
         }
 
-        // Estende o período coberto e registra o ciclo faturado
+        // Estende o período coberto e fecha o ciclo faturado (próximo = +1)
         await tx
           .update(subscriptions)
           .set({
             currentPeriodStart: chargeDate,
             currentPeriodEnd: new Date(chargeDate.getTime() + 30 * 24 * 60 * 60 * 1000),
-            currentBillingCycle: monthsActive,
+            currentBillingCycle: monthsActive + 1,
             updatedAt: new Date(),
           })
           .where(eq(subscriptions.id, sub.id));
