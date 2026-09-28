@@ -2,6 +2,14 @@ import { db, campaigns, coupons, promotion_redemptions, rides } from "@fairmove/
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 
+/** Claim de limite perdido por concorrência — dispara rollback da transação. */
+export class CouponExhaustedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CouponExhaustedError";
+  }
+}
+
 export interface CouponCampaign {
   id: string;
   discount_type: string;
@@ -118,6 +126,12 @@ export async function evaluateCoupon(
     return { valid: false, reason: "Cupom esgotado", discountCents: 0, coupon, campaign };
   }
 
+  if (campaign && campaign.max_uses != null && campaign.uses_count >= campaign.max_uses) {
+    // Limite da CAMPANHA (ex.: "100 cupons"): sem esta checagem o limite era
+    // apenas informativo — evaluate nunca olhava uses_count da campanha.
+    return { valid: false, reason: "Campanha esgotada", discountCents: 0, coupon, campaign };
+  }
+
   if (coupon.is_single_use) {
     const used = await db
       .select({ id: promotion_redemptions.id })
@@ -159,40 +173,57 @@ async function redeemCoupon(
   passengerId: string
 ): Promise<string | null> {
   const coupon = evaluation.coupon!;
-  const updated = await db
-    .update(coupons)
-    .set({
-      uses_count: sql`${coupons.uses_count} + 1`,
-      times_used: sql`${coupons.times_used} + 1`,
-    })
-    .where(
-      and(eq(coupons.id, coupon.id), sql`(${coupons.max_uses} IS NULL OR ${coupons.uses_count} < ${coupons.max_uses})`)
-    )
-    .returning({ id: coupons.id });
+  // Claim ATÔMICO dos limites (campanha e cupom) + registro do resgate na
+  // MESMA transação: duas requisições concorrentes não passam ambas pelo
+  // "uses_count < max_uses" (o evaluate é só preflight; quem garante é aqui).
+  return db.transaction(async (tx) => {
+    if (evaluation.campaign) {
+      const claimed = await tx
+        .update(campaigns)
+        .set({
+          uses_count: sql`${campaigns.uses_count} + 1`,
+          updated_at: new Date(),
+        })
+        .where(
+          and(
+            eq(campaigns.id, evaluation.campaign.id),
+            sql`(${campaigns.max_uses} IS NULL OR ${campaigns.uses_count} < ${campaigns.max_uses})`
+          )
+        )
+        .returning({ id: campaigns.id });
+      if (claimed.length === 0) {
+        // Estouro por concorrência — rollback total (cupom e redemption intactos).
+        throw new CouponExhaustedError("Campanha esgotada");
+      }
+    }
 
-  if (updated.length === 0) return null;
-
-  if (evaluation.campaign) {
-    await db
-      .update(campaigns)
+    const updated = await tx
+      .update(coupons)
       .set({
-        uses_count: sql`${campaigns.uses_count} + 1`,
-        updated_at: new Date(),
+        uses_count: sql`${coupons.uses_count} + 1`,
+        times_used: sql`${coupons.times_used} + 1`,
       })
-      .where(eq(campaigns.id, evaluation.campaign.id));
-  }
+      .where(
+        and(eq(coupons.id, coupon.id), sql`(${coupons.max_uses} IS NULL OR ${coupons.uses_count} < ${coupons.max_uses})`)
+      )
+      .returning({ id: coupons.id });
 
-  const redemptionId = uuidv4();
-  await db.insert(promotion_redemptions).values({
-    id: redemptionId,
-    rideId,
-    couponId: coupon.id,
-    passengerId,
-    redemption_code: coupon.code,
-    amount_discounted: evaluation.discountCents,
+    if (updated.length === 0) {
+      throw new CouponExhaustedError("Cupom esgotado");
+    }
+
+    const redemptionId = uuidv4();
+    await tx.insert(promotion_redemptions).values({
+      id: redemptionId,
+      rideId,
+      couponId: coupon.id,
+      passengerId,
+      redemption_code: coupon.code,
+      amount_discounted: evaluation.discountCents,
+    });
+
+    return redemptionId;
   });
-
-  return redemptionId;
 }
 
 const APPLICABLE_STATUSES = ["REQUESTED", "SEARCHING", "DRIVER_ASSIGNED"];
@@ -235,11 +266,19 @@ export async function applyPromotion(
 
   if (existingRedemption.length > 0) {
     const discountCents = Number(existingRedemption[0].amount_discounted);
+    // ride.finalPassengerPrice/driverCredit JÁ contêm o desconto quando ele
+    // foi persistido (promotionDiscount > 0). Recalcular "preço - desconto"
+    // sobre o valor já líquido devolvia R$0 ao cliente — resposta mentirosa
+    // que um app podia exibir/cobrar. O retorno reflete o estado real.
+    const alreadyApplied = Number(ride.promotionDiscount ?? 0) > 0;
+    const finalPriceCents = alreadyApplied
+      ? originalPriceCents
+      : Math.max(0, originalPriceCents - discountCents);
     return {
       discountApplied: discountCents > 0,
       discountCents,
-      finalPriceCents: Math.max(0, originalPriceCents - discountCents),
-      driverCreditCents: Math.max(0, originalPriceCents - discountCents),
+      finalPriceCents,
+      driverCreditCents: alreadyApplied ? Number(ride.driverCredit) : finalPriceCents,
       redemptionId: existingRedemption[0].id,
     };
   }
@@ -249,7 +288,15 @@ export async function applyPromotion(
     throw Object.assign(new Error(evaluation.reason || "Cupom inválido"), { statusCode: 400 });
   }
 
-  const redemptionId = await redeemCoupon(evaluation, rideId, passengerId);
+  let redemptionId: string | null;
+  try {
+    redemptionId = await redeemCoupon(evaluation, rideId, passengerId);
+  } catch (error) {
+    if (error instanceof CouponExhaustedError) {
+      throw Object.assign(new Error(error.message), { statusCode: 400 });
+    }
+    throw error;
+  }
   if (!redemptionId) {
     throw Object.assign(new Error("Cupom esgotado"), { statusCode: 400 });
   }

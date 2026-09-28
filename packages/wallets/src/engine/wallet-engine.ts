@@ -79,7 +79,16 @@ async function findByIdempotencyKey(exec: Exec, key: string) {
 }
 
 function isUniqueViolation(error: unknown): boolean {
-  return (error as { code?: string } | null)?.code === "23505";
+  // O drizzle-orm >=0.45 embrulha erros do driver em DrizzleQueryError:
+  // a propriedade `code` original vive em `error.cause` (e pode estar
+  // aninhada). Percorre a cadeia para não perder a detecção de23505 —
+  // sem isso um duplicate vira500 genérico em vez de DuplicateOperationError.
+  let current = error as { code?: string; cause?: unknown } | null;
+  for (let depth = 0; current != null && depth < 5; depth++) {
+    if (current.code === "23505") return true;
+    current = (current.cause ?? null) as { code?: string; cause?: unknown } | null;
+  }
+  return false;
 }
 
 /**
@@ -126,7 +135,10 @@ export class WalletEngine {
     } catch (error) {
       const key = values.idempotencyKey ?? undefined;
       if (isUniqueViolation(error) && key) {
-        const existing = await findByIdempotencyKey(tx, key);
+        // Após o erro, o Postgres aborta o resto da transação (qualquer
+        // statement nela falha com "current transaction is aborted") — a
+        // consulta da chave existente sai em OUTRA conexão do pool.
+        const existing = await findByIdempotencyKey(db, key);
         throw new DuplicateOperationError(existing?.id ?? values.id ?? uuidv4());
       }
       throw error;

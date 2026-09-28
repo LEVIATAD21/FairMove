@@ -16,6 +16,7 @@ import { calculateQuote, PRICING_RULES } from "../../pricing/src/engine/calculat
 import { applyPromotion, releaseRedemptions } from "../../promotions/src/engine/promotion-engine";
 import { setDriverAvailability } from "../../matching/src/engine/matching-engine";
 import { settleRidePayment } from "../../payments/src/settlement";
+import { DuplicateOperationError } from "../../wallets/src/engine/wallet-engine";
 import { eventPublisher } from "../../realtime/src/redis/publisher";
 
 const router = Router();
@@ -544,8 +545,15 @@ router.post("/:rideId/complete", requireAuth, async (req: Request, res: Response
       res.status(402).json({ error: "Payment could not be processed" });
       return;
     }
+    if (error instanceof DuplicateOperationError) {
+      // Liquidação desta corrida já processada por requisição concorrente —
+      // o claim de status abaixo decide; nunca expor500 por corrida.
+      res.status(409).json({ error: "Ride already settled" });
+      return;
+    }
     console.error("Complete ride error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     res.status(500).json({ error: "Internal server error" });
+    return;
   }
 });
 

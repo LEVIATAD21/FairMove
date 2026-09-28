@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import {
   walletEngine,
   InsufficientFundsError,
+  DuplicateOperationError,
 } from "../../wallets/src/engine/wallet-engine";
 import { paymentProvider } from "./index";
 
@@ -37,6 +38,30 @@ async function existsIdempotencyKey(key: string): Promise<boolean> {
   return rows.length > 0;
 }
 
+/** Recupera o resultado de uma corrida já liquidada (retry ou corrida concorrente). */
+function readSettledResult(
+  input: RideSettlementInput,
+  driverTransactionId: string,
+  metadata: string | null
+): RideSettlementResult {
+  let paymentMethod: "wallet" | "card" = "wallet";
+  if (metadata) {
+    try {
+      const meta = JSON.parse(metadata);
+      if (meta?.paymentMethod === "card") paymentMethod = "card";
+    } catch {
+      // metadata ilegível — mantém o padrão
+    }
+  }
+  return {
+    paymentMethod,
+    alreadySettled: true,
+    driverTransactionId,
+    passengerDebitedCents: input.fareCents,
+    driverCreditedCents: input.driverCreditCents,
+  };
+}
+
 /**
  * Liquida o pagamento de uma corrida concluída:
  *
@@ -58,23 +83,7 @@ export async function settleRidePayment(
       .where(sql`${ledger_transactions.idempotencyKey} = ${driverKey}`)
       .limit(1);
 
-    let paymentMethod: "wallet" | "card" = "wallet";
-    if (existing.length > 0 && existing[0].metadata) {
-      try {
-        const meta = JSON.parse(existing[0].metadata);
-        if (meta?.paymentMethod === "card") paymentMethod = "card";
-      } catch {
-        // metadata ilegível — mantém o padrão
-      }
-    }
-
-    return {
-      paymentMethod,
-      alreadySettled: true,
-      driverTransactionId: existing[0]?.id ?? "",
-      passengerDebitedCents: input.fareCents,
-      driverCreditedCents: input.driverCreditCents,
-    };
+    return readSettledResult(input, existing[0]?.id ?? "", existing[0]?.metadata ?? null);
   }
 
   const passengerKey = `ride:${input.rideId}:passenger-debit`;
@@ -114,6 +123,22 @@ export async function settleRidePayment(
       };
     });
   } catch (error) {
+    if (error instanceof DuplicateOperationError) {
+      // Requisição concorrente liquidou a corrida entre a pré-checagem e o
+      // insert (janela TOCTOU). A unique key do ledger garante que o dinheiro
+      // NÃO moveu duas vezes — aqui apenas reconhecemos a liquidação alheia e
+      // devolvemos alreadySettled para o chamador decidir a transição de estado.
+      const existing = await db
+        .select({ id: ledger_transactions.id, metadata: ledger_transactions.metadata })
+        .from(ledger_transactions)
+        .where(sql`${ledger_transactions.idempotencyKey} = ${driverKey}`)
+        .limit(1);
+      if (existing.length === 0) {
+        // A outra transação ainda não commitou visivelmente: invariante violada.
+        throw error;
+      }
+      return readSettledResult(input, existing[0].id, existing[0].metadata ?? null);
+    }
     if (error instanceof InsufficientFundsError) {
       // 2) Sem saldo: cobra no cartão (provedor)
       const authorized = await paymentProvider.authorize(input.fareCents / 100, "BRL", {

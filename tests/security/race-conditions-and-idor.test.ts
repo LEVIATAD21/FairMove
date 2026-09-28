@@ -19,7 +19,7 @@ import express from "express";
 import request from "supertest";
 import { createHash, randomUUID } from "crypto";
 import { sign } from "jsonwebtoken";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   db,
   users,
@@ -29,14 +29,18 @@ import {
   vehicles,
   rides,
   rideLocationEvents,
-} from "../packages/shared-db/src/index";
+  wallets,
+  ledger_transactions,
+  ledger_entries,
+} from "../../packages/shared-db/src/index";
+import { walletEngine } from "../../packages/wallets/src/engine/wallet-engine";
 import {
   getJwtSecret,
   getRefreshTokenSecret,
-} from "../packages/auth/src/middleware";
-import { authRouter } from "../packages/auth/src/routes";
-import { paymentRouter } from "../packages/payments/src/routes";
-import { rideRouter } from "../packages/rides/src/routes";
+} from "../../packages/auth/src/middleware";
+import { authRouter } from "../../packages/auth/src/routes";
+import { paymentRouter } from "../../packages/payments/src/routes";
+import { rideRouter } from "../../packages/rides/src/routes";
 
 const app = express();
 app.use(express.json());
@@ -146,6 +150,17 @@ describeIfDb("security: HTTP routes", () => {
       if (rideIds.length > 0) {
         await db.delete(rideLocationEvents).where(inArray(rideLocationEvents.rideId, rideIds));
         await db.delete(rides).where(inArray(rides.id, rideIds));
+      }
+      // Ledger e wallets criados pelos testes financeiros (FKs antes de users).
+      const walletRows = await db
+        .select({ id: wallets.id })
+        .from(wallets)
+        .where(inArray(wallets.userId, createdUserIds));
+      const walletIds = walletRows.map((w) => w.id);
+      if (walletIds.length > 0) {
+        await db.delete(ledger_entries).where(inArray(ledger_entries.walletId, walletIds));
+        await db.delete(ledger_transactions).where(inArray(ledger_transactions.walletId, walletIds));
+        await db.delete(wallets).where(inArray(wallets.id, walletIds));
       }
       await db.delete(verificationTokens).where(inArray(verificationTokens.userId, createdUserIds));
       await db.delete(sessions).where(inArray(sessions.userId, createdUserIds));
@@ -286,6 +301,98 @@ describeIfDb("security: HTTP routes", () => {
         .where(eq(rides.id, rideId));
       expect(rideRows[0].status).toBe("DRIVER_ASSIGNED");
       expect(rideRows[0].driverId).not.toBeNull();
+    });
+  });
+
+  describe("complete: settlement idempotente sob corrida (regressão do bug TOCTOU)", () => {
+    it("completar a mesma corrida em paralelo: settle exatamente1×, zero500, saldos exatos", async () => {
+      const passenger = await actor("passenger");
+      const rideId = await createRide(passenger);
+      const driver = await makeDriverOnline();
+      createdUserIds.push(driver.actor.id);
+      createdDriverIds.push(driver.driverId);
+      createdVehicleIds.push(driver.vehicleId);
+
+      // Saldo real para a liquidação sair pela carteira (não pelo gateway).
+      await walletEngine.ensureWallet(passenger.id);
+      await walletEngine.creditCents(passenger.id, 10_000);
+
+      const accept = await request(app)
+        .post(`/api/rides/${rideId}/accept`)
+        .set("Authorization", `Bearer ${driver.actor.token}`);
+      expect(accept.status).toBe(200);
+
+      for (const status of [
+        "DRIVER_ARRIVING",
+        "DRIVER_AT_PICKUP",
+        "PASSENGER_ONBOARD",
+        "IN_PROGRESS",
+      ]) {
+        const step = await request(app)
+          .patch(`/api/rides/${rideId}/status`)
+          .set("Authorization", `Bearer ${driver.actor.token}`)
+          .send({ status });
+        expect(step.status).toBe(200);
+      }
+
+      const passengerBefore = await walletEngine.getAvailableBalance(passenger.id);
+      const driverBefore = await walletEngine.getAvailableBalance(driver.actor.id);
+      const rideRow = await db.select().from(rides).where(eq(rides.id, rideId));
+      const fareCents = Number(rideRow[0].finalPassengerPrice);
+      const driverCreditCents = Number(rideRow[0].driverCredit);
+      expect(fareCents).toBeGreaterThan(0);
+
+      // Corrida:4 completions simultâneos (o bug original devia500 no perdedor).
+      const completions = await Promise.all(
+        Array.from({ length: 4 }, () =>
+          request(app)
+            .post(`/api/rides/${rideId}/complete`)
+            .set("Authorization", `Bearer ${driver.actor.token}`)
+        )
+      );
+
+      const statuses = completions.map((r) => r.status);
+      expect(statuses).not.toContain(500);
+      // Todo perdedor cai em409 (claim) ou400 (já COMPLETED); vencedor200.
+      expect(statuses.filter((s) => s === 200).length).toBeGreaterThanOrEqual(1);
+      expect(
+        completions
+          .filter((r) => r.status !== 200)
+          .every((r) => [400, 409].includes(r.status))
+      ).toBe(true);
+
+      // Dinheiro: exatamente UM settle (variação de saldo igual ao fare1×).
+      const passengerAfter = await walletEngine.getAvailableBalance(passenger.id);
+      const driverAfter = await walletEngine.getAvailableBalance(driver.actor.id);
+      expect(passengerBefore - passengerAfter).toBe(fareCents);
+      expect(driverAfter - driverBefore).toBe(driverCreditCents);
+
+      // Ledger: exatamente1 débito do passageiro e1 crédito do driver.
+      const passengerWallet = await walletEngine.getWallet(passenger.id);
+      const driverWallet = await walletEngine.getWallet(driver.actor.id);
+      const debitRows = await db
+        .select({ id: ledger_transactions.id })
+        .from(ledger_transactions)
+        .where(
+          and(
+            eq(ledger_transactions.walletId, passengerWallet!.id),
+            sql`ledger_transactions.idempotency_key = ${`ride:${rideId}:passenger-debit`}`
+          )
+        );
+      const creditRows = await db
+        .select({ id: ledger_transactions.id })
+        .from(ledger_transactions)
+        .where(
+          and(
+            eq(ledger_transactions.walletId, driverWallet!.id),
+            sql`ledger_transactions.idempotency_key = ${`ride:${rideId}:driver-credit`}`
+          )
+        );
+      expect(debitRows).toHaveLength(1);
+      expect(creditRows).toHaveLength(1);
+
+      const finalRide = await db.select().from(rides).where(eq(rides.id, rideId));
+      expect(finalRide[0].status).toBe("COMPLETED");
     });
   });
 

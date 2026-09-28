@@ -10,8 +10,8 @@ const describeIfDb = hasDb ? describe : describe.skip;
 
 import { randomUUID } from "crypto";
 import { eq } from "drizzle-orm";
-import { db, subscriptions } from "../packages/shared-db/src/index";
-import { SubscriptionEngine } from "../packages/subscriptions/src/engine/subscription-engine";
+import { db, subscriptions } from "../../packages/shared-db/src/index";
+import { SubscriptionEngine } from "../../packages/subscriptions/src/engine/subscription-engine";
 
 describeIfDb("subscriptions: anti-loop de trial", () => {
   const engine = new SubscriptionEngine();

@@ -118,9 +118,18 @@ When running the backend directly on the host instead of through Docker Compose,
 ## Security
 
 Hardening audit: all critical/high findings fixed, validated by automated
-tests (`tests/wallet-ledger-atomicity.test.ts`, `tests/security-routes.test.ts`,
-`tests/ws-handshake.test.ts`, `tests/subscription-trial-guard.test.ts`) —
+tests (`tests/security/double-spend.test.ts`,
+`tests/security/race-conditions-and-idor.test.ts`,
+`tests/security/ws-handshake.test.ts`,
+`tests/security/subscription-trial.test.ts`) —
 147 tests green.
+
+Red team mission (full attack + fix cycle): see
+[PENETRATION_TEST_REPORT.md](PENETRATION_TEST_REPORT.md),
+[THREAT_MODEL.md](THREAT_MODEL.md) and [SECURITY.md](SECURITY.md).
+Automated security regression suite lives in `tests/security/`
+(7 suites, 42 tests, covering IDOR, JWT attacks, race conditions,
+coupon limits, input validation and WS handshake).
 
 ### Critical
 

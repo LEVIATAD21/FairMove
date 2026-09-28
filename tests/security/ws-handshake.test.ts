@@ -17,9 +17,9 @@ import { createHash, randomUUID } from "crypto";
 import { WebSocket } from "ws";
 import { sign } from "jsonwebtoken";
 import { eq } from "drizzle-orm";
-import { db, users, sessions } from "../packages/shared-db/src/index";
-import { getJwtSecret } from "../packages/auth/src/middleware";
-import { attachRealtimeServer, type RealtimeServer } from "../packages/realtime/src/ws/server";
+import { db, users, sessions } from "../../packages/shared-db/src/index";
+import { getJwtSecret } from "../../packages/auth/src/middleware";
+import { attachRealtimeServer, type RealtimeServer } from "../../packages/realtime/src/ws/server";
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");

@@ -14,8 +14,8 @@ import "dotenv/config";
 const hasDb = Boolean(process.env.DATABASE_URL);
 const describeIfDb = hasDb ? describe : describe.skip;
 
-import { walletEngine, DuplicateOperationError, InsufficientFundsError } from "../packages/wallets/src/engine/wallet-engine";
-import { db, wallets, ledger_transactions, ledger_entries } from "../packages/shared-db/src/index";
+import { walletEngine, DuplicateOperationError, InsufficientFundsError } from "../../packages/wallets/src/engine/wallet-engine";
+import { db, wallets, ledger_transactions, ledger_entries } from "../../packages/shared-db/src/index";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { randomUUID } from "crypto";
 

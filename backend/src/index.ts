@@ -1,5 +1,5 @@
 import "dotenv/config";
-import express, { Express, NextFunction, Request, Response } from "express";
+import express, { Express, Request, Response } from "express";
 import helmet from "helmet";
 import compression from "compression";
 import cors from "cors";
@@ -23,6 +23,7 @@ import { subscriptionRouter } from "../../packages/subscriptions/src/routes";
 import { eventsRouter } from "../../packages/events/src/routes";
 import { eventScheduler } from "../../packages/events/src/scheduler";
 import { attachRealtimeServer } from "../../packages/realtime/src/ws/server";
+import { errorHandler } from "./error-handler";
 import { eventPublisher } from "../../packages/realtime/src/redis/publisher";
 import { findNearbyDrivers } from "../../packages/matching/src/engine/matching-engine";
 
@@ -253,20 +254,9 @@ app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
 });
 
-// JSON malformado vira 400 em vez de 500 genérico.
-app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
-  if (res.headersSent) {
-    next(err);
-    return;
-  }
-  if (err instanceof SyntaxError && "body" in err) {
-    res.status(400).json({ error: "Malformed JSON body" });
-    return;
-  }
-  const message = err instanceof Error ? err.message : "Internal server error";
-  console.error("Unhandled error:", message);
-  res.status(500).json({ error: "Internal server error" });
-});
+// JSON malformado/limite de payload → 400/413/415 (código testável em
+// tests/security/input-validation.test.ts); demais erros → 500 genérico.
+app.use(errorHandler);
 
 const server = app.listen(port, () => {
   eventScheduler.start();

@@ -16,3 +16,9 @@ minimumReleaseAgeExclude:
 
 overrides:
   react: 19.2.3
+  # CVEs corrigidas (pnpm audit): qs DoS no parsing de query do Express,
+  # morgan log forging, js-yaml CPU DoS (toolchain), decode-uri-component DoS.
+  qs: 6.16.0
+  morgan: 1.12.0
+  js-yaml: 3.15.2
+  decode-uri-component: 0.5.0
