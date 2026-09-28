@@ -36,6 +36,13 @@
       "when": 1790545749255,
       "tag": "0004_sweet_the_call",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790588292508,
+      "tag": "0005_aromatic_juggernaut",
+      "breakpoints": true
     }
   ]
 }

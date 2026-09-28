@@ -42,18 +42,7 @@ export const ledger_entries = pgTable("ledger_entries", {
   created_at: timestamp("created_at").defaultNow().notNull(),
 });
 
-export const reserve_transactions = pgTable("reserve_transactions", {
-  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-  walletId: text("wallet_id").notNull().references(() => wallets.id),
-  amount: integer("amount").notNull(),
-  purpose: text("purpose").notNull(),
-  direction: text("direction").notNull(),
-  status: text("status").default("completed").notNull(),
-  created_at: timestamp("created_at").defaultNow().notNull(),
-});
-
 export type Wallet = typeof wallets.$inferSelect;
 export type WalletAccount = typeof wallet_accounts.$inferSelect;
 export type LedgerTransaction = typeof ledger_transactions.$inferSelect;
 export type LedgerEntry = typeof ledger_entries.$inferSelect;
-export type ReserveTransaction = typeof reserve_transactions.$inferSelect;

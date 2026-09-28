@@ -16,8 +16,8 @@ export type { PricingQuote } from "./schema-pricing";
 export { campaigns, coupons, promotion_redemptions } from "./schema-promotions";
 export type { Campaign, Coupon, PromotionRedemption } from "./schema-promotions";
 
-export { wallets, wallet_accounts, ledger_transactions, ledger_entries, reserve_transactions as wallet_reserve_transactions } from "./schema-wallets";
-export type { Wallet, WalletAccount, LedgerTransaction, LedgerEntry, ReserveTransaction as WalletReserveTransaction } from "./schema-wallets";
+export { wallets, wallet_accounts, ledger_transactions, ledger_entries } from "./schema-wallets";
+export type { Wallet, WalletAccount, LedgerTransaction, LedgerEntry } from "./schema-wallets";
 
 export { emergency_reserves, reserve_transactions } from "./schema-reserves";
 export type { EmergencyReserve, ReserveTransaction } from "./schema-reserves";
