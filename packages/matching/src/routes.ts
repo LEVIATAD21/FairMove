@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { db, rides, drivers } from "@fairmove/shared-db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { requireAuth, requireRole } from "../../auth/src/middleware";
 import { validateBody, validateQuery, LatSchema, LngSchema } from "@fairmove/validation";
@@ -26,6 +26,15 @@ const DriverStatusSchema = z.object({
   status: z.enum(["online", "offline", "on_trip"]),
   available: z.boolean().optional(),
 });
+
+/** Status em que o MOTORISTA está com a corrida na mão (driverId != null). */
+const DRIVER_HELD_RIDE_STATUSES = [
+  "DRIVER_ASSIGNED",
+  "DRIVER_ARRIVING",
+  "DRIVER_AT_PICKUP",
+  "PASSENGER_ONBOARD",
+  "IN_PROGRESS",
+] as const;
 
 // Solicita o match de motoristas para a corrida (passageiro dono da corrida)
 router.post("/:rideId/match", requireAuth, async (req: Request, res: Response) => {
@@ -152,6 +161,26 @@ router.post(
       if (driver.length === 0) {
         res.status(404).json({ error: "Driver profile not found" });
         return;
+      }
+
+      // BUG-G1: marcar `available: true` com corrida ativa reabria o guard de
+      // accept (que só checa `driver.available`) — o motorista aceitava uma
+      // 2ª corrida e ficava com DUAS corridas DRIVER_ASSIGNED simultâneas.
+      if (available === true) {
+        const active = await db
+          .select({ id: rides.id })
+          .from(rides)
+          .where(
+            and(
+              eq(rides.driverId, driver[0].id),
+              inArray(rides.status, [...DRIVER_HELD_RIDE_STATUSES])
+            )
+          )
+          .limit(1);
+        if (active.length > 0) {
+          res.status(409).json({ error: "Driver has an active ride" });
+          return;
+        }
       }
 
       const patch: Record<string, unknown> = { status, updatedAt: new Date() };
