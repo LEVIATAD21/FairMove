@@ -22,6 +22,8 @@ import { fraudRouter } from "../../packages/fraud/src/routes";
 import { subscriptionRouter } from "../../packages/subscriptions/src/routes";
 import { eventsRouter } from "../../packages/events/src/routes";
 import { eventScheduler } from "../../packages/events/src/scheduler";
+import { CronJob } from "cron";
+import { expireStaleRides } from "../../packages/rides/src/expiry";
 import { attachRealtimeServer } from "../../packages/realtime/src/ws/server";
 import { errorHandler } from "./error-handler";
 import { eventPublisher } from "../../packages/realtime/src/redis/publisher";
@@ -258,8 +260,28 @@ app.use((_req: Request, res: Response) => {
 // tests/security/input-validation.test.ts); demais erros → 500 genérico.
 app.use(errorHandler);
 
+// BUG-E4: varredura de corridas presas (REQUESTED/SEARCHING) → EXPIRED.
+// Sem ela, o guard de corrida ativa bloqueava a conta do passageiro para
+// sempre. TTL: RIDE_EXPIRY_TTL_MINUTES (padrão 15); desligável com
+// RIDE_EXPIRY_ENABLED=false.
+const rideExpiryJob =
+  process.env.RIDE_EXPIRY_ENABLED === "false"
+    ? null
+    : new CronJob("*/1 * * * *", () => {
+        void expireStaleRides()
+          .then((count) => {
+            if (count > 0) {
+              console.log(`[RideExpiry] ${count} corrida(s) expirada(s)`);
+            }
+          })
+          .catch((error) => {
+            console.error("[RideExpiry]", error instanceof Error ? error.message : String(error));
+          });
+      });
+
 const server = app.listen(port, () => {
   eventScheduler.start();
+  rideExpiryJob?.start();
   console.log(`FairMove backend running on port ${port}`);
 });
 
@@ -285,6 +307,7 @@ void (async () => {
 
 function shutdown(signal: string): void {
   eventScheduler.stop();
+  rideExpiryJob?.stop();
   console.log(`${signal} received, shutting down gracefully...`);
   void realtime.close().catch(() => undefined);
   server.close(() => {

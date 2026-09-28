@@ -53,7 +53,7 @@ function centsToNumber(cents: number): number {
   return Math.round(cents) / 100;
 }
 
-async function recordRideEvent(
+export async function recordRideEvent(
   rideId: string,
   eventType: string,
   lat: string | null,
