@@ -1,4 +1,5 @@
 import { db, campaigns, coupons, promotion_redemptions, rides } from "@fairmove/shared-db";
+import type { Executor } from "@fairmove/shared-db";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 
@@ -170,60 +171,59 @@ export async function evaluateCoupon(
 async function redeemCoupon(
   evaluation: CouponEvaluation,
   rideId: string,
-  passengerId: string
-): Promise<string | null> {
+  passengerId: string,
+  exec: Executor
+): Promise<string> {
   const coupon = evaluation.coupon!;
   // Claim ATÔMICO dos limites (campanha e cupom) + registro do resgate na
   // MESMA transação: duas requisições concorrentes não passam ambas pelo
   // "uses_count < max_uses" (o evaluate é só preflight; quem garante é aqui).
-  return db.transaction(async (tx) => {
-    if (evaluation.campaign) {
-      const claimed = await tx
-        .update(campaigns)
-        .set({
-          uses_count: sql`${campaigns.uses_count} + 1`,
-          updated_at: new Date(),
-        })
-        .where(
-          and(
-            eq(campaigns.id, evaluation.campaign.id),
-            sql`(${campaigns.max_uses} IS NULL OR ${campaigns.uses_count} < ${campaigns.max_uses})`
-          )
-        )
-        .returning({ id: campaigns.id });
-      if (claimed.length === 0) {
-        // Estouro por concorrência — rollback total (cupom e redemption intactos).
-        throw new CouponExhaustedError("Campanha esgotada");
-      }
-    }
-
-    const updated = await tx
-      .update(coupons)
+  if (evaluation.campaign) {
+    const claimed = await exec
+      .update(campaigns)
       .set({
-        uses_count: sql`${coupons.uses_count} + 1`,
-        times_used: sql`${coupons.times_used} + 1`,
+        uses_count: sql`${campaigns.uses_count} + 1`,
+        updated_at: new Date(),
       })
       .where(
-        and(eq(coupons.id, coupon.id), sql`(${coupons.max_uses} IS NULL OR ${coupons.uses_count} < ${coupons.max_uses})`)
+        and(
+          eq(campaigns.id, evaluation.campaign.id),
+          sql`(${campaigns.max_uses} IS NULL OR ${campaigns.uses_count} < ${campaigns.max_uses})`
+        )
       )
-      .returning({ id: coupons.id });
-
-    if (updated.length === 0) {
-      throw new CouponExhaustedError("Cupom esgotado");
+      .returning({ id: campaigns.id });
+    if (claimed.length === 0) {
+      // Estouro por concorrência — rollback total (cupom e redemption intactos).
+      throw new CouponExhaustedError("Campanha esgotada");
     }
+  }
 
-    const redemptionId = uuidv4();
-    await tx.insert(promotion_redemptions).values({
-      id: redemptionId,
-      rideId,
-      couponId: coupon.id,
-      passengerId,
-      redemption_code: coupon.code,
-      amount_discounted: evaluation.discountCents,
-    });
+  const updated = await exec
+    .update(coupons)
+    .set({
+      uses_count: sql`${coupons.uses_count} + 1`,
+      times_used: sql`${coupons.times_used} + 1`,
+    })
+    .where(
+      and(eq(coupons.id, coupon.id), sql`(${coupons.max_uses} IS NULL OR ${coupons.uses_count} < ${coupons.max_uses})`)
+    )
+    .returning({ id: coupons.id });
 
-    return redemptionId;
+  if (updated.length === 0) {
+    throw new CouponExhaustedError("Cupom esgotado");
+  }
+
+  const redemptionId = uuidv4();
+  await exec.insert(promotion_redemptions).values({
+    id: redemptionId,
+    rideId,
+    couponId: coupon.id,
+    passengerId,
+    redemption_code: coupon.code,
+    amount_discounted: evaluation.discountCents,
   });
+
+  return redemptionId;
 }
 
 const APPLICABLE_STATUSES = ["REQUESTED", "SEARCHING", "DRIVER_ASSIGNED"];
@@ -288,9 +288,46 @@ export async function applyPromotion(
     throw Object.assign(new Error(evaluation.reason || "Cupom inválido"), { statusCode: 400 });
   }
 
-  let redemptionId: string | null;
+  // BUG-F1: o resgate (uses_count++/redemption) SÓ pode acontecer dentro da
+  // janela em que o preço será de fato atualizado. Antes de existir este gate
+  // o cupom era queimado em corridas avançadas (DRIVER_ARRIVING, IN_PROGRESS…)
+  // com o preço intacto — e a resposta ainda devolvia finalPrice descontado.
+  if (!APPLICABLE_STATUSES.includes(ride.status)) {
+    throw Object.assign(
+      new Error(`Cupom não pode ser aplicado em corrida com status ${ride.status}`),
+      { statusCode: 409 }
+    );
+  }
+
+  const finalPriceCents = originalPriceCents - evaluation.discountCents;
+
+  // Transação ÚNICA: resgate + persistência do preço. Se o update não achar
+  // a corrida na janela aplicável (status mudou por concorrência), o throw
+  // desfaz o resgate — nunca fica "cupom queimado sem desconto".
+  let redemptionId: string | null = null;
   try {
-    redemptionId = await redeemCoupon(evaluation, rideId, passengerId);
+    await db.transaction(async (tx) => {
+      redemptionId = await redeemCoupon(evaluation, rideId, passengerId, tx);
+
+      const updatedRides = await tx
+        .update(rides)
+        .set({
+          promotionDiscount: evaluation.discountCents,
+          finalPassengerPrice: finalPriceCents,
+          // Regra de negócio: motorista recebe o valor líquido pago pelo passageiro.
+          driverCredit: finalPriceCents,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(rides.id, rideId), inArray(rides.status, APPLICABLE_STATUSES)))
+        .returning({ id: rides.id });
+
+      if (updatedRides.length === 0) {
+        throw Object.assign(
+          new Error(`Cupom não pode ser aplicado em corrida com status ${ride.status}`),
+          { statusCode: 409 }
+        );
+      }
+    });
   } catch (error) {
     if (error instanceof CouponExhaustedError) {
       throw Object.assign(new Error(error.message), { statusCode: 400 });
@@ -299,21 +336,6 @@ export async function applyPromotion(
   }
   if (!redemptionId) {
     throw Object.assign(new Error("Cupom esgotado"), { statusCode: 400 });
-  }
-
-  const finalPriceCents = originalPriceCents - evaluation.discountCents;
-
-  if (APPLICABLE_STATUSES.includes(ride.status)) {
-    await db
-      .update(rides)
-      .set({
-        promotionDiscount: evaluation.discountCents,
-        finalPassengerPrice: finalPriceCents,
-        // Regra de negócio: motorista recebe o valor líquido pago pelo passageiro.
-        driverCredit: finalPriceCents,
-        updatedAt: new Date(),
-      })
-      .where(eq(rides.id, rideId));
   }
 
   return {
