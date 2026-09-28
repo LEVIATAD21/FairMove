@@ -489,25 +489,51 @@ router.post("/:rideId/complete", requireAuth, async (req: Request, res: Response
       return;
     }
 
-    // 1) Liquidação financeira (idempotente)
-    const settlement = await settleRidePayment({
-      rideId,
-      passengerId: ride.passengerId,
-      driverUserId,
-      fareCents,
-      driverCreditCents,
-    });
-
-    // 2) Transição de estado (atômica)
-    const updated = await db
+    // 1) CLAIM de estado ANTES do dinheiro (BUG-E3): o settle corria antes do
+    // CAS — cancelamento concorrente vencia o status DEPOIS do débito/crédito
+    // já commitados, deixando corrida CANCELLED com passageiro debitado e
+    // motorista creditado (sem estorno). Agora só o vencedor do CAS liquida.
+    const claimed = await db
       .update(rides)
       .set({ status: "COMPLETED", completedAt: new Date(), updatedAt: new Date() })
       .where(and(eq(rides.id, rideId), eq(rides.status, "IN_PROGRESS")))
       .returning({ id: rides.id });
 
-    if (updated.length === 0) {
+    if (claimed.length === 0) {
       res.status(409).json({ error: "Ride state changed concurrently" });
       return;
+    }
+
+    // 2) Liquidação financeira (idempotente). Falhou → devolve IN_PROGRESS e
+    // propaga: dinheiro e status nunca ficam divergentes (retry é seguro —
+    // settle é idempotente por corrida). DuplicateOperationError = corrida já
+    // liquidada por tentativa anterior → NÃO reverta: COMPLETED é o estado
+    // certo; a pré-checagem do settle devolve o resultado já registrado.
+    let settlement: Awaited<ReturnType<typeof settleRidePayment>>;
+    try {
+      settlement = await settleRidePayment({
+        rideId,
+        passengerId: ride.passengerId,
+        driverUserId,
+        fareCents,
+        driverCreditCents,
+      });
+    } catch (settleError) {
+      if (settleError instanceof DuplicateOperationError) {
+        settlement = await settleRidePayment({
+          rideId,
+          passengerId: ride.passengerId,
+          driverUserId,
+          fareCents,
+          driverCreditCents,
+        });
+      } else {
+        await db
+          .update(rides)
+          .set({ status: "IN_PROGRESS", completedAt: null, updatedAt: new Date() })
+          .where(and(eq(rides.id, rideId), eq(rides.status, "COMPLETED")));
+        throw settleError;
+      }
     }
 
     // 3) Motorista volta a ficar disponível
