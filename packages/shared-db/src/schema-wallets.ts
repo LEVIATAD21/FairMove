@@ -1,4 +1,4 @@
-import { pgTable, text, integer, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, timestamp, index } from "drizzle-orm/pg-core";
 
 export const wallets = pgTable("wallets", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
@@ -19,7 +19,9 @@ export const wallet_accounts = pgTable("wallet_accounts", {
   created_at: timestamp("created_at").defaultNow().notNull(),
 });
 
-export const ledger_transactions = pgTable("ledger_transactions", {
+export const ledger_transactions = pgTable(
+  "ledger_transactions",
+  {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   walletId: text("wallet_id").notNull().references(() => wallets.id),
   transactionType: text("transaction_type").notNull(),
@@ -30,9 +32,15 @@ export const ledger_transactions = pgTable("ledger_transactions", {
   status: text("status").default("completed").notNull(),
   idempotencyKey: text("idempotency_key").unique(),
   created_at: timestamp("created_at").defaultNow().notNull(),
-});
+  },
+  (t) => ({
+    walletCreatedIdx: index("idx_ledger_tx_wallet_created").on(t.walletId, t.created_at),
+  })
+);
 
-export const ledger_entries = pgTable("ledger_entries", {
+export const ledger_entries = pgTable(
+  "ledger_entries",
+  {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   transactionId: text("transaction_id").notNull().references(() => ledger_transactions.id),
   walletId: text("wallet_id").notNull().references(() => wallets.id),
@@ -40,7 +48,11 @@ export const ledger_entries = pgTable("ledger_entries", {
   amount: integer("amount").notNull(),
   balanceAfter: integer("balance_after").notNull(),
   created_at: timestamp("created_at").defaultNow().notNull(),
-});
+  },
+  (t) => ({
+    walletCreatedIdx: index("idx_ledger_entries_wallet_created").on(t.walletId, t.created_at),
+  })
+);
 
 export type Wallet = typeof wallets.$inferSelect;
 export type WalletAccount = typeof wallet_accounts.$inferSelect;

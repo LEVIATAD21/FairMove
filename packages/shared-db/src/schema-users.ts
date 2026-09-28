@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, integer, index } from "drizzle-orm/pg-core";
 import { users } from "./schema-auth";
 
 export const profiles = pgTable("profiles", {
@@ -14,7 +14,9 @@ export const profiles = pgTable("profiles", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-export const drivers = pgTable("drivers", {
+export const drivers = pgTable(
+  "drivers",
+  {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   userId: text("user_id").notNull().unique().references(() => users.id),
   vehicleId: text("vehicle_id"),
@@ -28,7 +30,12 @@ export const drivers = pgTable("drivers", {
   subscriptionStatus: text("subscription_status").default("free").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+  },
+  (t) => ({
+    // BUG-H2: filtro de matching (online + disponível) era Seq Scan a cada busca.
+    statusAvailableIdx: index("idx_drivers_status_available").on(t.status, t.available),
+  })
+);
 
 export const vehicles = pgTable("vehicles", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),

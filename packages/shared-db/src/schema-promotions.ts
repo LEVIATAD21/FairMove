@@ -1,4 +1,4 @@
-import { pgTable, text, integer, boolean, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, boolean, timestamp, index } from "drizzle-orm/pg-core";
 
 export const campaigns = pgTable("campaigns", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
@@ -31,7 +31,9 @@ export const coupons = pgTable("coupons", {
   expires_at: timestamp("expires_at"),
 });
 
-export const promotion_redemptions = pgTable("promotion_redemptions", {
+export const promotion_redemptions = pgTable(
+  "promotion_redemptions",
+  {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   rideId: text("ride_id"),
   couponId: text("coupon_id").references(() => coupons.id),
@@ -39,7 +41,12 @@ export const promotion_redemptions = pgTable("promotion_redemptions", {
   redemption_code: text("redemption_code").notNull(),
   amount_discounted: integer("amount_discounted").notNull(),
   used_at: timestamp("used_at").defaultNow().notNull(),
-});
+  },
+  (t) => ({
+    // BUG-H2: releaseRedemptions/applyPromotion buscam por ride_id.
+    rideIdx: index("idx_promotion_redemptions_ride").on(t.rideId),
+  })
+);
 
 export type Campaign = typeof campaigns.$inferSelect;
 export type Coupon = typeof coupons.$inferSelect;

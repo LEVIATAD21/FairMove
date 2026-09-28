@@ -1,6 +1,8 @@
-import { pgTable, text, integer, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, timestamp, index } from "drizzle-orm/pg-core";
 
-export const fraud_events = pgTable("fraud_events", {
+export const fraud_events = pgTable(
+  "fraud_events",
+  {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   userId: text("user_id"),
   rideId: text("ride_id"),
@@ -10,7 +12,12 @@ export const fraud_events = pgTable("fraud_events", {
   description: text("description"),
   metadata: text("metadata"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+  },
+  (t) => ({
+    // BUG-H2: scoring roda 3 queries (user_id, event_type) por avaliação.
+    userTypeIdx: index("idx_fraud_events_user_type").on(t.userId, t.eventType),
+  })
+);
 
 export const risk_scores = pgTable("risk_scores", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),

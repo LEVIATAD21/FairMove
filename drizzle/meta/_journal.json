@@ -43,6 +43,13 @@
       "when": 1790588292508,
       "tag": "0005_aromatic_juggernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790639184787,
+      "tag": "0006_qa_secondary_indexes",
+      "breakpoints": true
     }
   ]
 }
