@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { db, wallets, ledger_transactions, ledger_entries } from "@fairmove/shared-db";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { requireAuth, requireRole, requireSelfOrRole } from "../../auth/src/middleware";
 import { validateBody, WalletOperationSchema, ReserveOperationSchema } from "@fairmove/validation";
 import {
@@ -111,6 +111,9 @@ router.get(
         .select()
         .from(ledger_transactions)
         .where(eq(ledger_transactions.walletId, wallet.id))
+        // BUG-H1: sem ORDER BY, o LIMIT cortava subconjunto arbitrário
+        // (ordem física) e o extrato mostrava as linhas mais VELHAS.
+        .orderBy(desc(ledger_transactions.created_at), desc(ledger_transactions.id))
         .limit(200);
 
       res.json({ transactions });
@@ -138,6 +141,8 @@ router.get(
         .select()
         .from(ledger_entries)
         .where(eq(ledger_entries.walletId, wallet.id))
+        // BUG-H1: mesmo problema das transactions — janela arbitrária.
+        .orderBy(desc(ledger_entries.created_at), desc(ledger_entries.id))
         .limit(500);
 
       res.json({ entries });
