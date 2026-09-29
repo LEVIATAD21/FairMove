@@ -475,6 +475,22 @@ router.post("/:rideId/complete", requireAuth, async (req: Request, res: Response
     const fareCents = Number(ride.finalPassengerPrice);
     const driverCreditCents = Number(ride.driverCredit);
 
+    // BUG-X2: guarda da regra de negócio "motorista recebe exatamente o que o
+    // passageiro paga". Quem CONSTRÓI o input de settle é esta rota (as duas
+    // únicas chamadas de settleRidePayment são daqui) — settlement.ts fica
+    // intocado (congelamento PSP). Divergência = corrupção de dados: recusa
+    // ANTES do claim de status e do dinheiro, com erro explícito.
+    if (fareCents !== driverCreditCents) {
+      console.error(
+        `[settlement] ride ${rideId}: business rule violation — ` +
+          `driverCredit=${driverCreditCents} !== fare=${fareCents}`
+      );
+      res.status(500).json({
+        error: `Business rule violation: driverCredit (${driverCreditCents}) must equal fare (${fareCents})`,
+      });
+      return;
+    }
+
     const driverUserId = ride.driverId
       ? (
           await db
