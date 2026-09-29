@@ -73,6 +73,19 @@ function readSettledResult(
 export async function settleRidePayment(
   input: RideSettlementInput
 ): Promise<RideSettlementResult> {
+  // BUG-X2: regra de negócio "FairMove não tira comissão da corrida — o
+  // motorista recebe exatamente o que o passageiro paga". Núcleo da regra
+  // validado aqui (as duas únicas chamadas também têm guard na rota complete,
+  // que responde 500 amigável antes do claim); qualquer chamador futuro que
+  // passe valores divergentes é recusado antes de mover um centavo.
+  if (input.fareCents !== input.driverCreditCents) {
+    throw new Error(
+      `Business rule violation: driverCreditCents (${input.driverCreditCents}) ` +
+        `must equal fareCents (${input.fareCents}). ` +
+        "FairMove does not take commission from rides."
+    );
+  }
+
   const driverKey = `ride:${input.rideId}:driver-credit`;
 
   // Já liquidada? (retry seguro)
