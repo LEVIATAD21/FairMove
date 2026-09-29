@@ -1,5 +1,4 @@
 import Redis from "ioredis";
-import { createHash } from "crypto";
 
 /**
  * Blacklist de refresh tokens no Redis.
@@ -11,9 +10,6 @@ import { createHash } from "crypto";
  * sendo a autoridade final.
  */
 
-function sha256(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
 
 let client: Redis | null = null;
 let unavailable = false;
@@ -69,7 +65,3 @@ export async function isRefreshSessionBlacklisted(sessionId: string): Promise<bo
   }
 }
 
-/** Hash do token para logs/correlação sem expor o valor cru. */
-export function refreshTokenFingerprint(token: string): string {
-  return sha256(token).slice(0, 12);
-}

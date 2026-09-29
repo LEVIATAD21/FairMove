@@ -123,17 +123,12 @@ export const ReserveOperationSchema = z.object({
   purpose: ReservePurposeSchema.optional(),
 });
 
-export const RideStatusUpdateSchema = z.object({
-  status: RideStatusSchema,
-});
+
 
 export const CancelRideSchema = z.object({
   reason: z.string().trim().max(500).optional(),
 });
 
-export const CouponSchema = z.object({
-  code: z.string().trim().min(3).max(40),
-});
 
 // BUG-I2: z.coerce.date() NÃO ignora null (new Date(null) = 1970-01-01) —
 // front-ends que mandam null em data vazia criavam campanha com janela já

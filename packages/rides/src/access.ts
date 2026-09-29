@@ -32,12 +32,3 @@ export async function loadRideForUser(rideId: string, user: AuthUser): Promise<R
 
   return { ok: false, status: 403, message: "You do not have access to this ride" };
 }
-
-/**
- * Guarda de participação usada por rotas auxiliares (safety, fraud).
- * Retorna a corrida ou `null` (404/403 devem ser respondidos pelo caller).
- */
-export async function canAccessRide(rideId: string, user: AuthUser): Promise<Ride | null> {
-  const result = await loadRideForUser(rideId, user);
-  return result.ok ? result.ride : null;
-}

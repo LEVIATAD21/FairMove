@@ -229,31 +229,6 @@ export async function calculateEventRewards(eventId: string): Promise<Distribute
   return distributed;
 }
 
-/**
- * Maior cupom de desconto vigente do motorista (0–100). Considera a vigência
- * `durationMonths` a partir da emissão. Base do cálculo da mensalidade
- * (somente fatia da plataforma).
- */
-export async function getActiveDriverDiscountPercent(
-  driverId: string,
-  now: Date = new Date()
-): Promise<number> {
-  const coupons = await db
-    .select()
-    .from(eventRewards)
-    .where(and(eq(eventRewards.driverId, driverId), eq(eventRewards.rewardType, "discount_coupon")));
-
-  let best = 0;
-  for (const coupon of coupons) {
-    const issuedAt = new Date(coupon.createdAt);
-    const expiresAt = new Date(issuedAt);
-    expiresAt.setMonth(expiresAt.getMonth() + (coupon.durationMonths ?? 1));
-    if (now >= issuedAt && now < expiresAt) {
-      best = Math.max(best, coupon.discountPercent ?? 0);
-    }
-  }
-  return best;
-}
 
 function toDistributed(row: EventReward): DistributedReward {
   return {

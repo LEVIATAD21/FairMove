@@ -17,10 +17,6 @@
  * de apresentação (dividindo por 100).
  */
 
-/** Conta de destino da parcela da plataforma no ledger. */
-export const PLATFORM_REVENUE_ACCOUNT = "platform_revenue_account";
-/** Conta de destino da reserva (bloqueada para saque imediato). */
-export const DISCIPLINE_RESERVE_ACCOUNT = "discipline_and_emergency_reserve_account";
 
 /** Teto máximo da mensalidade (R$ 200,00), nunca é excedido. */
 export const MONTHLY_FEE_CAP_CENTS = 20_000;
