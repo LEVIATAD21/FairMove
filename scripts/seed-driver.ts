@@ -1,18 +1,27 @@
 /**
- * Seed de contas de teste REAIS para o E2E da corrida (PASSO 4).
+ * Seed de contas OPERACIONAIS para o E2E da corrida (PASSO 4).
  *
  * - Escreve APENAS no Postgres real (banco configurado em .env).
  * - Idempotente: pode ser executado quantas vezes for preciso.
  * - Cria:
- *   1. motorista driver@test.com (role "driver", senha Test123!),
+ *   1. motorista joao.silva@fairmove.com.br (role "driver"),
  *      profile com telefone, linha em drivers (online/available),
- *      carteira 0/0 e assinatura ativa mês 1 (trial) via subscriptionEngine;
- *   2. admin admin@fairmove.dev (role "admin") — usado pelo E2E para
- *      creditar a carteira do passageiro via POST /api/v1/wallets/:id/credit.
+ *      veículo Honda Civic 2022 (placa Mercosul), carteira 0/0 e
+ *      assinatura ativa mês 1 (trial) via subscriptionEngine;
+ *   2. admin admin@fairmove.com.br (role "admin") — usado pelo E2E para
+ *      creditar a carteira do passageiro via POST /api/v1/wallets/:id/credit;
+ *   3. passageiro carlos.oliveira@fairmove.com.br (role "passenger") —
+ *      conta do E2E da corrida (senha sincronizada a cada seed).
+ *
+ * Senhas: NÃO são embutidas. Vêm de `.env.local` (gitignored) via
+ * SEED_DRIVER_PASSWORD / SEED_ADMIN_PASSWORD — gere com
+ * `openssl rand -base64 16`. O E2E lê as mesmas variáveis.
  *
  * Uso: pnpm build && node dist/scripts/seed-driver.js
  */
 import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: ".env.local" });
 import { eq } from "drizzle-orm";
 import { db, users, profiles, drivers, vehicles } from "@fairmove/shared-db";
 import { hashPassword } from "../packages/auth/src/utils/password";
@@ -23,21 +32,39 @@ interface SeedAccount {
   email: string;
   password: string;
   name: string;
-  role: "driver" | "admin";
+  role: "driver" | "admin" | "passenger";
+}
+
+function requiredPassword(variable: string): string {
+  const value = process.env[variable];
+  if (!value) {
+    throw new Error(
+      `${variable} ausente — defina em .env.local (gitignored) e gere com: openssl rand -base64 16`
+    );
+  }
+  return value;
 }
 
 const DRIVER_ACCOUNT: SeedAccount = {
-  email: "driver@test.com",
-  password: "Test123!",
-  name: "Motorista Teste",
+  email: "joao.silva@fairmove.com.br",
+  password: requiredPassword("SEED_DRIVER_PASSWORD"),
+  name: "João Silva",
   role: "driver",
 };
 
 const ADMIN_ACCOUNT: SeedAccount = {
-  email: "admin@fairmove.dev",
-  password: "Test123!",
-  name: "Admin Teste",
+  email: "admin@fairmove.com.br",
+  password: requiredPassword("SEED_ADMIN_PASSWORD"),
+  name: "Admin FairMove",
   role: "admin",
+};
+
+/** Passageiro operacional do E2E (register/login do e2e:ride e demo:e2e). */
+const PASSENGER_ACCOUNT: SeedAccount = {
+  email: "carlos.oliveira@fairmove.com.br",
+  password: requiredPassword("SEED_PASSENGER_PASSWORD"),
+  name: "Carlos Oliveira",
+  role: "passenger",
 };
 
 /** Praça de São Paulo — ponto de referência do motorista no seed. */
@@ -138,11 +165,11 @@ async function ensureVehicle(driverRowId: string): Promise<{ created: boolean }>
       .insert(vehicles)
       .values({
         driverId: driverRowId,
-        brand: "Fiat",
-        model: "Argo",
-        year: 2020,
-        color: "Branco",
-        plate: "FMOV0001",
+        brand: "Honda",
+        model: "Civic",
+        year: 2022,
+        color: "Prata",
+        plate: "ABC1D23",
         vehicleType: "car",
       })
       .returning({ id: vehicles.id });
@@ -168,14 +195,14 @@ async function main(): Promise<void> {
 
   const driver = await upsertAccount(DRIVER_ACCOUNT);
   console.log(
-    "[seed-driver] users: motorista %s → %s (id=%s, role=driver, senha=Test123!)",
+    "[seed-driver] users: motorista %s → %s (id=%s, role=driver, senha via SEED_DRIVER_PASSWORD)",
     DRIVER_ACCOUNT.email,
     driver.created ? "CRIADO" : "ATUALIZADO",
     driver.id
   );
 
-  await ensureProfile(driver.id, "+5511999999999");
-  console.log("[seed-driver] profiles: telefone +5511999999999 garantido");
+  await ensureProfile(driver.id, "+5511987654321");
+  console.log("[seed-driver] profiles: telefone +5511987654321 garantido");
 
   const driverRow = await ensureDriverRow(driver.id);
   console.log(
@@ -188,7 +215,7 @@ async function main(): Promise<void> {
 
   const vehicle = await ensureVehicle(driverRow.id);
   console.log(
-    "[seed-driver] vehicles: %s (Fiat Argo 2020, placa FMOV0001, car)",
+    "[seed-driver] vehicles: %s (Honda Civic 2022, placa ABC1D23, car)",
     vehicle.created ? "CRIADO" : "EXISTENTE"
   );
 
@@ -209,6 +236,16 @@ async function main(): Promise<void> {
     admin.created ? "CRIADO" : "ATUALIZADO",
     admin.id
   );
+
+  const passenger = await upsertAccount(PASSENGER_ACCOUNT);
+  console.log(
+    "[seed-driver] users: passageiro %s → %s (id=%s, role=passenger)",
+    PASSENGER_ACCOUNT.email,
+    passenger.created ? "CRIADO" : "ATUALIZADO",
+    passenger.id
+  );
+  await ensureProfile(passenger.id, "+5511912345678");
+  await walletEngine.ensureWallet(passenger.id);
 
   console.log("[seed-driver] OK — contas reais prontas, nenhum dado de negócio inventado.");
 }

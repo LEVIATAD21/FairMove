@@ -60,7 +60,7 @@ export default function DriverLogin() {
         <View style={styles.form}>
           <Input
             label="E-mail"
-            placeholder="voce@exemplo.com"
+            placeholder="contato@fairmove.com.br"
             keyboardType="email-address"
             autoCapitalize="none"
             autoComplete="email"

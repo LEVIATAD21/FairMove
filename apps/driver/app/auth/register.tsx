@@ -68,7 +68,7 @@ export default function DriverRegister() {
           />
           <Input
             label="E-mail"
-            placeholder="voce@exemplo.com"
+            placeholder="contato@fairmove.com.br"
             keyboardType="email-address"
             autoCapitalize="none"
             autoComplete="email"

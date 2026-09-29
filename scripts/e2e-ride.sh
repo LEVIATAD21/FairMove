@@ -4,6 +4,18 @@
 # Contra o backend real (Postgres + Redis). Nada de mocks.
 set -euo pipefail
 
+# Credenciais reais do seed vêm de .env.local (gitignored) — ver README
+# "Primeiro Acesso em Produção".
+[ -f .env ] && { set -a; . ./.env; set +a; }
+[ -f .env.local ] && { set -a; . ./.env.local; set +a; }
+: "${SEED_DRIVER_PASSWORD:?SEED_DRIVER_PASSWORD ausente — defina em .env.local (openssl rand -base64 16)}"
+: "${SEED_ADMIN_PASSWORD:?SEED_ADMIN_PASSWORD ausente — defina em .env.local (openssl rand -base64 16)}"
+: "${SEED_PASSENGER_PASSWORD:?SEED_PASSENGER_PASSWORD ausente — defina em .env.local (openssl rand -base64 16)}"
+
+DRIVER_EMAIL="joao.silva@fairmove.com.br"
+PASSENGER_EMAIL="carlos.oliveira@fairmove.com.br"
+ADMIN_EMAIL="admin@fairmove.com.br"
+
 BASE="${BASE:-http://localhost:3000}"
 API="$BASE/api/v1"
 PG="docker exec fairmove-postgres psql -U fairmove -d fairmove -tA -c"
@@ -27,8 +39,8 @@ code=$(req GET "$BASE/ready")
 [[ "$code" == 200 ]] || fail "$code" "/ready"
 ok "$code" "/ready $(jq -c . < "$B")"
 
-step "1) login do motorista seedado (driver@test.com)"
-code=$(req POST "$API/auth/login" "" '{"email":"driver@test.com","password":"Test123!"}')
+step "1) login do motorista seedado ($DRIVER_EMAIL)"
+code=$(req POST "$API/auth/login" "" "{\"email\":\"$DRIVER_EMAIL\",\"password\":\"$SEED_DRIVER_PASSWORD\"}")
 [[ "$code" == 200 ]] || fail "$code" "login motorista"
 DT=$(jqv .token); ok "$code" "token ok (${#DT} chars)"
 
@@ -39,20 +51,30 @@ DRIVER_ROLE=$(jqv .user.role)
 [[ "$DRIVER_ROLE" == "driver" ]] || { echo "FALHA: role esperado 'driver', veio '$DRIVER_ROLE'"; exit 1; }
 
 step "2) passageiro novo via register real (re-execução faz login)"
-code=$(req POST "$API/auth/register" "" '{"name":"Passageiro E2E","email":"e2e.passenger@fairmove.dev","password":"Test123!"}')
+code=$(req POST "$API/auth/register" "" "{\"name\":\"Carlos Oliveira\",\"email\":\"$PASSENGER_EMAIL\",\"password\":\"$SEED_PASSENGER_PASSWORD\"}")
 if [[ "$code" == 201 ]]; then
   ok "$code" "passageiro CRIADO"
 elif [[ "$code" == 409 ]]; then
   ok "$code" "passageiro já existe (re-execução) -> login"
-  code=$(req POST "$API/auth/login" "" '{"email":"e2e.passenger@fairmove.dev","password":"Test123!"}')
+  code=$(req POST "$API/auth/login" "" "{\"email\":\"$PASSENGER_EMAIL\",\"password\":\"$SEED_PASSENGER_PASSWORD\"}")
   [[ "$code" == 200 ]] || fail "$code" "login passageiro"
 else
   fail "$code" "register passageiro"
 fi
 PT=$(jqv .token); PID=$(jqv .user.id); ok "$code" "passageiro id=$PID"
 
+# Re-execução segura: corridas pendentes de runs anteriores bloqueiam a
+# criação com 409 (uma corrida ativa por passageiro) — cancela antes.
+code=$(req GET "$API/rides/history/me" "$PT")
+[[ "$code" == 200 ]] || fail "$code" "history passageiro"
+while read -r RIDE_ID RIDE_STATUS; do
+  [[ -z "$RIDE_ID" ]] && continue
+  ccode=$(req POST "$API/rides/$RIDE_ID/cancel" "$PT" '{"reason":"E2E re-execucao"}')
+  ok "$ccode" "cancelada corrida pendente ${RIDE_ID:0:8} ($RIDE_STATUS)"
+done < <(jq -r '.rides[]? | select(.status | test("^(COMPLETED|CANCELLED|EXPIRED)") | not) | "\(.id) \(.status)"' < "$B")
+
 step "3) funding real: admin credita R\$50 na carteira do passageiro (ledger de dupla entrada)"
-code=$(req POST "$API/auth/login" "" '{"email":"admin@fairmove.dev","password":"Test123!"}')
+code=$(req POST "$API/auth/login" "" "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$SEED_ADMIN_PASSWORD\"}")
 [[ "$code" == 200 ]] || fail "$code" "login admin"
 AT=$(jqv .token); ok "$code" "admin logado"
 
@@ -105,7 +127,7 @@ step "9) conferência direta no Postgres"
 $PG "SELECT status, final_passenger_price, driver_credit, estimated_distance, completed_at IS NOT NULL AS completed FROM rides WHERE id='$RIDE_ID';" | sed 's/^/  /'
 $PG "SELECT transaction_type, amount, description, idempotency_key FROM ledger_transactions WHERE idempotency_key LIKE 'ride:$RIDE_ID:%' ORDER BY transaction_type;" | sed 's/^/  /'
 echo "  -- wallets:"
-$PG "SELECT u.email, w.available_balance, w.pending_balance FROM wallets w JOIN users u ON u.id=w.user_id WHERE u.email IN ('driver@test.com','e2e.passenger@fairmove.dev') ORDER BY u.email;" | sed 's/^/  /'
+$PG "SELECT u.email, w.available_balance, w.pending_balance FROM wallets w JOIN users u ON u.id=w.user_id WHERE u.email IN ('$DRIVER_EMAIL','$PASSENGER_EMAIL') ORDER BY u.email;" | sed 's/^/  /'
 
 echo
 echo "E2E PASSO 4 OK — corrida real liquidada, \$14,62 debitados do passageiro e creditados no motorista via ledger."

@@ -67,6 +67,38 @@ When running the backend directly on the host instead of through Docker Compose,
 
 `REDIS_URL` is optional: without it the realtime layer runs as a no-op.
 
+### Primeiro Acesso em Produção
+
+Em produção as credenciais vêm **apenas** de variáveis de ambiente seguras
+(secret manager / cofre) — nada de senhas em código, repo ou logs.
+
+1. Configure o `.env` (copie de `.env.example`) e gere os segredos:
+   ```bash
+   openssl rand -base64 48  # JWT_SECRET
+   openssl rand -base64 48  # REFRESH_TOKEN_SECRET (deve ser DIFERENTE do anterior)
+   ```
+2. Rode as migrações:
+   ```bash
+   pnpm db:migrate
+   ```
+3. Crie a primeira conta admin via API:
+   ```bash
+   curl -X POST http://localhost:3000/api/v1/auth/register \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "name": "Admin FairMove",
+       "email": "admin@fairmove.com.br",
+       "password": "SUA_SENHA_FORTE_AQUI"
+     }'
+   ```
+4. Promova o usuário para admin (update direto em `users.role` ou rota admin).
+5. **Remova** `INITIAL_ADMIN_EMAIL`/`INITIAL_ADMIN_PASSWORD` do `.env` após
+   criar a conta (existem só para provisionar o primeiro acesso).
+
+Contas operacionais de E2E (`pnpm db:seed-driver`) usam senhas de
+`.env.local` (gitignored) — gere com `openssl rand -base64 16` e guarde no
+cofre da equipe; elas nunca são committadas.
+
 ### Available Scripts
 
 - `pnpm test` - Run all tests
@@ -218,18 +250,19 @@ pnpm app:driver               # abre no Expo Go (celular) ou emulador
 - Tokens no SecureStore (Keychain/Keystore), refresh automático em 401
 - Saldos/vazio: telas mostram R$ 0,00 e "sem dados" quando o banco está vazio
 
-### 4. Contas de teste (via API real — nada fake no banco)
+### 4. Criar contas reais (via API real — nada fake no banco)
 ```bash
 curl -X POST http://localhost:3000/api/v1/auth/register \
   -H 'Content-Type: application/json' \
-  -d '{"name":"Nome","email":"voce@exemplo.com","password":"SenhaForte#2026"}'
+  -d '{"name":"Nome","email":"contato@fairmove.com.br","password":"SUA_SENHA_FORTE_AQUI"}'
 ```
 
 ### 5. Seed de motorista + E2E da corrida (PASSO 4)
 ```bash
 pnpm build
-pnpm db:seed-driver      # idempotente: driver@test.com (role=driver, mês 1 trial)
-                         # + admin@fairmove.dev para funding via API
+pnpm db:seed-driver      # idempotente: joao.silva@fairmove.com.br (driver, mês 1 trial)
+                         # + admin@fairmove.com.br para funding via API
+                         # senhas em .env.local (gitignored) — ver "Primeiro Acesso"
 pnpm e2e:ride            # fluxo completo contra o Postgres real
 ```
 O E2E executa: login motorista → register passageiro → admin credita R$ 50

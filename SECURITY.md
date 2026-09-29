@@ -23,6 +23,13 @@ mantenedora. Inclua passos de reprodução; não publique PoC antes da correçã
 
 Gerar segredos: `openssl rand -base64 48`.
 
+**Credenciais em produção:** todas as credenciais (admin inicial, seeds
+operacionais, senhas de serviços) devem ser geradas via `openssl rand` e
+armazenadas somente em variáveis de ambiente seguras (secret manager /
+cofre). Nenhuma credencial de teste ou exemplo é válida em produção; as
+contas de seed usam senhas de `.env.local` (gitignored) e devem ser rotacionadas
+no primeiro acesso. Nunca commite `.env`, `.env.local` ou logs contendo segredos.
+
 ## Proteções ativas
 
 ### Autenticação e sessões

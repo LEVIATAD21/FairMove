@@ -13,6 +13,8 @@
  * Uso: pnpm build && pnpm db:seed-driver && pnpm demo:e2e
  */
 import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: ".env.local" });
 import { spawnSync } from "child_process";
 import { WebSocket } from "ws";
 import { Client } from "pg";
@@ -156,15 +158,23 @@ class WsProbe {
   }
 }
 
+function requiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} ausente — defina em .env.local (gitignored)`);
+  }
+  return value;
+}
+
 async function ensurePassenger(): Promise<{ token: string; userId: string }> {
-  const email = "e2e.passenger@fairmove.dev";
-  const password = "Test123!";
+  const email = "carlos.oliveira@fairmove.com.br";
+  const password = requiredEnv("SEED_PASSENGER_PASSWORD");
   const login = await api("POST", "/auth/login", undefined, { email, password });
   if (login.status === 200) {
     return { token: login.json.token, userId: login.json.user.id };
   }
   const register = await api("POST", "/auth/register", undefined, {
-    name: "Passageiro E2E",
+    name: "Carlos Oliveira",
     email,
     password,
   });
@@ -196,9 +206,9 @@ async function main(): Promise<void> {
   }
   console.log("  OK  seed de motorista/admin executado");
 
-  const driverToken = await login("driver@test.com", "Test123!");
+  const driverToken = await login("joao.silva@fairmove.com.br", requiredEnv("SEED_DRIVER_PASSWORD"));
   const passenger = await ensurePassenger();
-  const adminToken = await login("admin@fairmove.dev", "Test123!");
+  const adminToken = await login("admin@fairmove.com.br", requiredEnv("SEED_ADMIN_PASSWORD"));
 
   // limpeza de corridas pendentes de runs anteriores (o cancel real do
   // passageiro também devolve available=true ao motorista)
@@ -260,7 +270,7 @@ async function main(): Promise<void> {
   const latencyMatched = matched.at - t1;
   console.log(`  --  passageiro recebeu ride:matched em ${latencyMatched}ms`);
   check(latencyMatched < SLA_MS, "critério 4: passageiro vê aceitação <1s", `(${latencyMatched}ms)`);
-  check(matched.data.vehiclePlate === "FMOV0001", "dados reais do motorista", matched.data.vehiclePlate);
+  check(matched.data.vehiclePlate === "ABC1D23", "dados reais do motorista", matched.data.vehiclePlate);
 
   // 5) transições de status → ambos acompanham sem polling
   for (const status of [
