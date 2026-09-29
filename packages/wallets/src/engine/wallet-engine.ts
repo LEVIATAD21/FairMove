@@ -5,7 +5,7 @@ import {
   ledger_entries,
   type Executor,
 } from "@fairmove/shared-db";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, desc } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 
 type Exec = Executor;
@@ -568,6 +568,31 @@ export class WalletEngine {
       newReserveBalance: result.newReserveBalance,
       newAvailableBalance: result.newAvailableBalance,
     };
+  }
+
+  /**
+   * BUG-X10: histórico de transações encapsulado no engine (as rotas
+   * consultavam o banco direto, duplicando a query). Ordenação estável
+   * `created_at DESC, id DESC` (lição H1: sem a coluna `id` o LIMIT cortava
+   * linhas físicas arbitrárias no empate de timestamp).
+   */
+  async getTransactionHistory(
+    userId: string,
+    limit: number = 100,
+    offset: number = 0,
+    exec: Exec = db
+  ): Promise<(typeof ledger_transactions.$inferSelect)[]> {
+    const wallet = await this.getWallet(userId, exec);
+    if (!wallet) return [];
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 100;
+    const safeOffset = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
+    return exec
+      .select()
+      .from(ledger_transactions)
+      .where(eq(ledger_transactions.walletId, wallet.id))
+      .orderBy(desc(ledger_transactions.created_at), desc(ledger_transactions.id))
+      .limit(safeLimit)
+      .offset(safeOffset);
   }
 }
 

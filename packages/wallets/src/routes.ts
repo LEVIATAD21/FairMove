@@ -107,14 +107,8 @@ router.get(
         return;
       }
 
-      const transactions = await db
-        .select()
-        .from(ledger_transactions)
-        .where(eq(ledger_transactions.walletId, wallet.id))
-        // BUG-H1: sem ORDER BY, o LIMIT cortava subconjunto arbitrário
-        // (ordem física) e o extrato mostrava as linhas mais VELHAS.
-        .orderBy(desc(ledger_transactions.created_at), desc(ledger_transactions.id))
-        .limit(200);
+      // BUG-X10: consulta encapsulada no engine (ordenação H1 preservada lá).
+      const transactions = await walletEngine.getTransactionHistory(userId, 200);
 
       res.json({ transactions });
     } catch (error) {
