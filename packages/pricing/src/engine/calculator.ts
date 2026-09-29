@@ -14,6 +14,8 @@ export const PRICING_RULES = {
   perMinute: 0.918,
   minSurge: 0.5,
   maxSurge: 3.0,
+  /** BUG-X5: piso do preço final (após surge e desconto) — R$0 nunca. */
+  minFare: 7.0,
 } as const;
 
 function clamp(value: number, min: number, max: number): number {
@@ -27,6 +29,10 @@ function clamp(value: number, min: number, max: number): number {
  * - `dynamicAdjustment` (surge/desconto dinâmico) é aplicado sobre a tarifa base
  *   e limitado a [0.5, 3.0].
  * - O desconto promocional nunca pode deixar o preço negativo.
+ * - BUG-X5: o preço final tem PISO em `PRICING_RULES.minFare` (R$7) — aplicado
+ *   DEPOIS do desconto, com o desconto reportado como o efetivamente
+ *   concedido (original − final). Surge 0,5 em trecho curto ou cupom
+ *   agressivo nunca entrega corrida abaixo do mínimo.
  * - Regra do modelo de negócio: `driverCredit === passengerPrice` (sem comissão).
  */
 export function calculateQuote(
@@ -57,7 +63,16 @@ export function calculateQuote(
   const requestedDiscountCents = toCents(safeNonNegative(promotionDiscount, 0));
   const discountCents = clamp(requestedDiscountCents, 0, originalPriceCents);
 
-  const passengerPriceCents = originalPriceCents - discountCents;
+  const rawPassengerPriceCents = originalPriceCents - discountCents;
+  // BUG-X5: piso após o desconto — piso acima do original (surge baixo em
+  // trecho curto) também vale; a resposta mantém o originalPrice real.
+  const passengerPriceCents = Math.max(rawPassengerPriceCents, toCents(PRICING_RULES.minFare));
+  // Desconto EFETIVO honesto: se o piso subiu o preço, o desconto reportado
+  // encolhe junto (nunca maior que o concedido nem maior que o possível).
+  const effectiveDiscountCents = Math.min(
+    discountCents,
+    Math.max(0, originalPriceCents - passengerPriceCents)
+  );
   const passengerPrice = fromCents(passengerPriceCents);
 
   // Regra de negócio: motorista recebe exatamente o que o passageiro pagou.
@@ -65,7 +80,7 @@ export function calculateQuote(
 
   return {
     originalPrice,
-    promotionDiscount: fromCents(discountCents),
+    promotionDiscount: fromCents(effectiveDiscountCents),
     passengerPrice,
     driverCredit,
   };
