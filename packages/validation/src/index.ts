@@ -70,13 +70,26 @@ export const ChangePasswordSchema = z.object({
   newPassword: PasswordSchema,
 });
 
-export const LatSchema = z.coerce
-  .number()
-  .refine((v) => v >= -90 && v <= 90, "Latitude out of range");
+// BUG-I1: z.coerce.number() puro aceitava null→0, ""→0 e true→1 — corrida
+// nascia na Ilha Nula (0,0), o motorista sumia do matching e o nearby
+// consultava (0,lng) com 200. Só number finito ou string numérica não-vazia
+// é coordenada válida.
+function coordinateSchema(min: number, max: number, label: string) {
+  return z
+    .unknown()
+    .refine(
+      (v): v is number | string =>
+        (typeof v === "number" && Number.isFinite(v)) ||
+        (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))),
+      `${label} must be a number`
+    )
+    .transform((v) => (typeof v === "string" ? Number(v.trim()) : v))
+    .refine((v) => v >= min && v <= max, `${label} out of range`);
+}
 
-export const LngSchema = z.coerce
-  .number()
-  .refine((v) => v >= -180 && v <= 180, "Longitude out of range");
+export const LatSchema = coordinateSchema(-90, 90, "Latitude");
+
+export const LngSchema = coordinateSchema(-180, 180, "Longitude");
 
 export const CreateRideSchema = z.object({
   pickupLocationLat: LatSchema,
