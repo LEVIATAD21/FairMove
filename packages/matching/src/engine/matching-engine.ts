@@ -24,6 +24,8 @@ export interface NearbyDriver extends DriverMatch {
 }
 
 export const DEFAULT_MAX_DISTANCE_KM = 10;
+/** BUG-X3: teto de motoristas devolvidos por chamada (resposta bounded). */
+export const DEFAULT_NEARBY_LIMIT = 50;
 
 /** Point geography (WGS84) — base de todas as métricas do matching. */
 function pointGeography(lng: number, lat: number) {
@@ -88,7 +90,8 @@ export async function findNearbyDrivers(
   passengerLat: number,
   passengerLng: number,
   vehicleType?: "car" | "motorcycle",
-  maxDistanceKm: number = DEFAULT_MAX_DISTANCE_KM
+  maxDistanceKm: number = DEFAULT_MAX_DISTANCE_KM,
+  limit: number = DEFAULT_NEARBY_LIMIT
 ): Promise<NearbyDriver[]> {
   if (
     !Number.isFinite(passengerLat) ||
@@ -103,6 +106,21 @@ export async function findNearbyDrivers(
 
   const radiusMeters = maxDistanceKm * 1000;
   const pickup = pointGeography(passengerLng, passengerLat);
+  // BUG-X3: resposta bounded por padrão (área densa com milhares de
+  // motoristas devolvia a lista inteira). O filtro de TIPO precisa entrar no
+  // SQL antes do LIMIT — em JS depois do fetch, o teto cortaria os
+  // motores mais próximos junto com os carros.
+  const safeLimit =
+    Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : DEFAULT_NEARBY_LIMIT;
+
+  const conditions = [
+    eq(drivers.status, "online"),
+    eq(drivers.available, true),
+    sql`ST_DWithin(${driverPointGeography()}, ${pickup}, ${radiusMeters})`,
+  ];
+  if (vehicleType) {
+    conditions.push(eq(vehicles.vehicleType, vehicleType));
+  }
 
   const rows = await db
     .select({
@@ -114,14 +132,9 @@ export async function findNearbyDrivers(
     .from(drivers)
     .leftJoin(vehicles, eq(drivers.vehicleId, vehicles.id))
     .leftJoin(users, eq(drivers.userId, users.id))
-    .where(
-      and(
-        eq(drivers.status, "online"),
-        eq(drivers.available, true),
-        sql`ST_DWithin(${driverPointGeography()}, ${pickup}, ${radiusMeters})`
-      )
-    )
-    .orderBy(sql`ST_Distance(${driverPointGeography()}, ${pickup})`);
+    .where(and(...conditions))
+    .orderBy(sql`ST_Distance(${driverPointGeography()}, ${pickup})`)
+    .limit(safeLimit);
 
   const matches = rows
     .map((row: DriverCandidate & { distanceMeters: string | null }) =>
