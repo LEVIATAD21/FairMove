@@ -136,6 +136,14 @@ export const CouponSchema = z.object({
   code: z.string().trim().min(3).max(40),
 });
 
+// BUG-I2: z.coerce.date() NÃO ignora null (new Date(null) = 1970-01-01) —
+// front-ends que mandam null em data vazia criavam campanha com janela já
+// encerrada (cupom morto). null vira "campo ausente".
+const OptionalDate = z.preprocess(
+  (v) => (v === null ? undefined : v),
+  z.coerce.date().optional()
+);
+
 export const CampaignSchema = z.object({
   name: z.string().trim().min(2).max(100),
   description: z.string().trim().max(500).optional(),
@@ -144,8 +152,8 @@ export const CampaignSchema = z.object({
   targetType: z.enum(["ride", "user", "region", "category"]).optional(),
   targetValue: z.string().trim().max(100).optional(),
   maxUses: z.coerce.number().int().positive().optional(),
-  startDate: z.coerce.date().optional(),
-  endDate: z.coerce.date().optional(),
+  startDate: OptionalDate,
+  endDate: OptionalDate,
 });
 
 export const ProfileUpdateSchema = z
