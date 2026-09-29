@@ -160,7 +160,21 @@ export class SubscriptionEngine {
       })
       .where(eq(subscriptions.userId, userId));
 
-    return { success: true, status: "cancelled", message: "Assinatura cancelada com sucesso" };
+    // BUG-X7: a resposta documenta o período vigente e a política de
+    // reembolso — cancelar no dia 15 sem essa informação gerava disputa.
+    const now = new Date();
+    const periodEnd = existing.currentPeriodEnd ? new Date(existing.currentPeriodEnd) : null;
+    const daysRemaining = periodEnd
+      ? Math.max(0, Math.ceil((periodEnd.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)))
+      : 0;
+    const periodPart = periodEnd
+      ? `Período vigente até ${periodEnd.toISOString().split("T")[0]} (${daysRemaining} dias restantes). `
+      : "";
+    return {
+      success: true,
+      status: "cancelled",
+      message: `Assinatura cancelada. ${periodPart}Sem reembolso proporcional conforme termos de uso.`,
+    };
   }
 
   async checkTrialExpiration(userId: string): Promise<{
