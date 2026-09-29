@@ -9,8 +9,9 @@ análise estática): teste RED documentando o comportamento errado → fix → t
 re-ataque → gates (`pnpm typecheck`, `pnpm lint`, `pnpm build`, `pnpm test`) → **commit
 por bug**. O gateway/PSP permaneceu **intocado** (congelado pelo fundador).
 
-**Resultado final: 17 achados — 16 corrigidos, 1 documentado (BUG-C).
-Suíte completa: 199/199 testes em 26 suítes (31 cenários novos de auditoria).**
+**Resultado final: 27 achados — 24 corrigidos, 2 documentados (BUG-C, X9),
+1 falso positivo (X8, sem alteração).
+Suíte completa: 207/207 testes em 27 suítes (41 cenários novos de auditoria).**
 
 | Área | Bugs | Estado |
 |---|---|---|
@@ -21,6 +22,7 @@ Suíte completa: 199/199 testes em 26 suítes (31 cenários novos de auditoria).
 | 5. Performance/paginação/ledger | H1, H2, H3 | 3 corrigidos |
 | 6. Edge cases de validação | I1, I2 | 2 corrigidos |
 | 7. Código morto/higiene | J1, J2 | 2 corrigidos |
+| 8. Análise humana (X1–X10) | X1–X7, X10 | 8 corrigidos, X9 documentado, X8 falso positivo |
 
 ---
 
@@ -377,20 +379,188 @@ Guardas executadas (já corretas): `amount: null/"abc"` → 400; senha sem núme
 
 ---
 
+## Análise Humana — Bugs X1–X10 (segunda rodada)
+
+**Contexto:** o fundador apontou 10 pontos por leitura própria (X1–X10).
+Metodologia idêntica: veredito apurado por execução contra o código real,
+RED → fix → GREEN, commit por bug. Restrição PSP mantida: `settlement.ts`
+**intocado**.
+
+### BUG-X1 — HIGH — reserveEngine vestia centavos de "reais" (dupla conversão)
+
+1. **Descrição:** `contributeToReserve/recordContribution/payoutFromReserve`
+   aceitavam "reais" e reverte com `Math.round(amount*100)`; o caminho da
+   mensalidade passava `fee.reserveShare / 100` — contrato "centavos vestidos
+   de reais" com footgun de 100x para qualquer call site futuro.
+2. **Cenário:** `chargeMonthlyFee` com `reserveShare=4900` (R$49,00 em centavos).
+3. **Output real (RED):** `emergency_usage=490000` — 4900 tratado como reais
+   quando o call site esquece `/100`. (No caminho atual o roundtrip `/100`→
+   `toCents` é **lossless** — Math.round absorve o FP; o bug é de CONTRATO,
+   não há perda de precisão hoje.)
+4. **Causa raiz:** engine em unidade ambígua enquanto todo o resto da base
+   (`walletEngine`, `finalPassengerPrice`) é nativamente em centavos.
+5. **Diff:** `assertCents` (integer > 0) substitui `toCents`; parâmetro renomeado
+   `amountCents`; `subscription-engine.ts` sem `/100`; `reserves/routes.ts`
+   repassa o `cents` já computado. `walletEngine` em BRL ("compat API antiga")
+   não mexido.
+6. **Teste:** `tests/qa-human.test.ts [X1]` — RED 490000 → GREEN 4900;
+   regressão do caminho da mensalidade: `[BUG-D] amount===4900` verde.
+7. **Commit:** `16175d9`. Evidência: `/tmp/opencode/qax_red.log`,
+   `qax1_green.log`, `qax1_regression.log`.
+
+### BUG-X2 — CRITICAL (regra de negócio) — `driverCredit ≠ fare` passava no settle
+
+1. **Descrição:** a regra documentada "motorista recebe exatamente o que o
+   passageiro paga" não era validada em nenhum ponto do fluxo de conclusão.
+2. **Cenário:** corrida com `driverCredit` corrompido (divergente do fare);
+   POST complete.
+3. **Output real (RED):** `complete→200`, corrida COMPLETED, passageiro
+   −1462, motorista +1362 — dinheiro divergente movido.
+4. **Causa raiz:** a rota monta `fareCents`/`driverCreditCents` do banco e chama
+   `settleRidePayment` sem validar; as duas únicas chamadas de settle são
+   deste handler.
+5. **Diff:** guard **na rota** (`packages/rides/src/routes.ts`) antes do claim
+   de status: divergência → 500 `Business rule violation` + log. `settlement.ts`
+   permanece intocado (restrição PSP — se o freeze for levantado, o guard pode
+   migrar para dentro do settlement).
+6. **Teste:** `[X2]` — RED 200/dinheiro movido → GREEN 500, saldos intactos,
+   status IN_PROGRESS.
+7. **Commit:** `822ca07`. Evidência: `qax_red.log`, `qax2_green.log`.
+
+### BUG-X3 — HIGH — `findNearbyDrivers` sem LIMIT e tipo filtrado em JS
+
+1. **Descrição:** a busca varria todo o raio (até 10 km) sem `LIMIT`;
+   `vehicleType` era filtrado **após** o fetch, em JS.
+2. **Cenário:** 80 motoristas semeados; busca default e busca `motorcycle`
+   com `limit=5`.
+3. **Output real (RED):** `nearby → 81 linhas` (esperado ≤50); com 25 motos,
+   `limit=5` ignorado.
+4. **Causa raiz:** resposta não-bounded (payload/risco de broadcast em área
+   densa) + filtro em JS que faria o teto cortar os mais próximos por tipo.
+5. **Diff:** `DEFAULT_NEARBY_LIMIT = 50`, parâmetro `limit` saneado,
+   `eq(vehicles.vehicleType, ...)` no WHERE **antes** do `.limit()`;
+   `orderBy(ST_DDistance)` preservado (`matchDriverWithRide` usa `[0]`).
+6. **Teste:** `[X3]` — RED 81/25 → GREEN 50 e 5 motos exatos.
+7. **Commit:** `a5e9ebb`. Evidência: `qax_red.log`, `qax3_green.log`.
+
+### BUG-X4 — MEDIUM — `updateDriverLocation` aceitava coordenadas fora de faixa
+
+1. **Descrição:** o único ponto que executava o UPDATE aceitava qualquer
+   `number` (999, NaN) sem validar.
+2. **Cenário:** `updateDriverLocation(id, 999, 999)` e `NaN` via engine direto.
+3. **Output real (RED):** aceitava e gravava (`linha intacta lat=-23.99` só
+   após o fix).
+4. **Causa raiz:** validação só nas bordas (HTTP `DriverLocationSchema` e WS
+   `interpretClientMessage` — ambas **já** validavam); o engine era cego.
+5. **Diff:** guarda no engine: `Number.isFinite` + faixa ±90/±180 → throw
+   `Invalid latitude/longitude`. **Defense-in-depth:** bug não alcançável
+   via API — classificado como hardening, não falha explorável.
+6. **Teste:** `[X4]` — RED aceitava → GREEN throws ×3 + linha intacta.
+7. **Commit:** `848058a`. Evidência: `qax_red.log`, `qax4_green.log`.
+
+### BUG-X5 — HIGH — `calculateQuote` sem preço mínimo (piso)
+
+1. **Descrição:** sem `minFare`, surge 0.5 em trecho curto ficava abaixo da
+   tarifa base; cupom agressivo levava o final a R$0.
+2. **Cenário:** `calculateQuote` com surge 0.5 (trecho curto) e promo 30%.
+3. **Output real (RED):** `surge0.5 final=4.01`, `promo30 final=0`.
+4. **Causa raiz:** desconto aplicado sem piso e sem desconto efetivo honesto.
+5. **Diff:** `PRICING_RULES.minFare = 7.0` aplicado **após** o desconto;
+   `promotionDiscount` reportado como efetivo (`original − final`, limitado ao
+   concedido). **Premissa corrigida:** 50 m custa R$7,97 (base+dist+tempo), não
+   R$7,00 — minFare é piso, não teto. Promoção inline (promotion-engine) não
+   usa `calculateQuote` — fora do escopo.
+6. **Teste:** `[X5]` — RED 4.01/0 → GREEN 7.0/7.0; `tests/pricing.test.ts`
+   3/3 inalterados.
+7. **Commit:** `98b04f3`. Evidência: `qax_red.log`, `qax5_green.log`.
+
+### BUG-X6 — MEDIUM — segundo cupom DIFERENTE aceito em silêncio
+
+1. **Descrição:** o branch de idempotência retornava o estado do **primeiro**
+   resgate para qualquer código pedido (`discountApplied=true` enganoso).
+2. **Cenário:** aplicar FAIR-A; em seguida aplicar FAIR-B na mesma corrida.
+3. **Output real (RED):** `apply B→200` com o desconto do A.
+4. **Causa raiz:** idempotência por corrida sem checar *qual* cupom estava
+   resgatado (`redemption_code`).
+5. **Diff:** código **diferente** → 409 `Only one coupon per ride` (case-
+   insensitive); **mesmo** código continua 200 idempotente (contrato
+   documentado + `tests/security/coupon-race`).
+6. **Teste:** `[X6]` — RED 200 → GREEN 409 + retry mesmo-cupom 200;
+   regressão coupon-race verde.
+7. **Commit:** `77296f2`. Evidência: `qax_red.log`, `qax6_green.log`,
+   `qax6_regression.log`.
+
+### BUG-X7 — LOW — cancelamento sem período vigente nem política na resposta
+
+1. **Descrição:** mensagem genérica "Assinatura cancelada com sucesso".
+2. **Cenário:** cancelar com 30 dias restantes no período corrente.
+3. **Output real (RED):** `msg="Assinatura cancelada com sucesso"`.
+4. **Causa raiz:** resposta sem os fatos que geram disputa (até quando vale,
+   se há reembolso).
+5. **Diff:** resposta factual: `Período vigente até YYYY-MM-DD (N dias
+   restantes). Sem reembolso proporcional conforme termos de uso.` — "período
+   vigente" e não "acesso" (nada é gated por status).
+6. **Teste:** `[X7]` — RED genérica → GREEN com data/dias.
+7. **Commit:** `3feecc9`. Evidência: `qax_red.log`, `qax7_green.log`.
+
+### BUG-X8 — FALSO POSITIVO — "desconto antigo vence o novo"
+
+1. **Descrição:** a alegação era que cupons antigos competiam por
+   `Math.max`. Veredito por leitura: **falso positivo**.
+2. **Cenário:** `resolveActiveDiscountPercent` com cupom vigente/expirado.
+3. **Output real:** o método **já** valida vigência
+   (`issuedAt ≤ now < issuedAt + durationMonths`) e escolhe o **maior**
+   desconto vigente **por design** (FairMove League: beneficiar quem tem a
+   melhor condição vigente).
+4. **Causa raiz da alegação:** confundir "maior desconto" com "mais recente";
+   recência seria **regressão** (cortaria benefício legítimo maior).
+5. **Diff:** **nenhum** — sem alteração.
+6. **Teste:** comportamento coberto pelos testes existentes de cupons.
+7. **Commit:** nenhum (documentado aqui).
+
+### BUG-X9 — INFO — ausência de `moveBetweenBuckets` (só documentação)
+
+1. **Descrição:** não existe transferência entre buckets da reserva.
+2. **Cenário:** leitura de manutenção.
+3. **Output real:** nunca existiu — não é bug de código.
+4. **Causa raiz:** por design (emergency é gasto, os outros são reservas;
+   transferência livre permitiria usar "fuel" como giro de "emergency").
+5. **Diff:** comentário de classe documentando a decisão e o caminho futuro
+   (regra + ledger audit trail).
+6. **Teste:** n/a (docs-only).
+7. **Commit:** `cdd735b`.
+
+### BUG-X10 — MEDIUM — extrato consultava o banco direto (sem método no engine)
+
+1. **Descrição:** `GET /:userId/transactions` duplicava a query dentro da rota.
+2. **Cenário:** chamada ao extrato + comparação rota ↔ engine.
+3. **Output real (RED):** `typeof getTransactionHistory = undefined`.
+4. **Causa raiz:** consulta não encapsulada — fácil de divergir das outras
+   leituras do ledger.
+5. **Diff:** `walletEngine.getTransactionHistory(userId, limit=100, offset=0)`
+   com `orderBy(created_at DESC, id DESC)` (lição H1 preservada) e limit/
+   offset saneados; rota usa o método (limite 200 inalterado).
+6. **Teste:** `[X10]` — RED undefined → GREEN função + paridade
+   `engine[0] === rota[0]`.
+7. **Commit:** `39c42eb`. Evidência: `qax_red.log`, `qax10_green.log`.
+
+---
+
 ## Resumo Final
 
 | Métrica | Valor |
 |---|---|
-| Achados | 17 (16 corrigidos, 1 documentado) |
-| CRITICAL | 3 (D, A, E3) — todos corrigidos |
-| HIGH | 8 corrigidos (B, E2, E4, F1, F2, G1, H1, H2) + 1 documentado (C) |
-| MEDIUM | 3 (H3, I1, I2) |
-| LOW | 2 (J1, J2) + documentado C |
-| Suíte completa | **199/199 — 26 suítes** |
-| Gates | typecheck ✅ lint ✅ build ✅ test ✅ |
-| Commits da missão | 23 (`13c2a8b..dd5a165`), commit por bug |
+| Achados | 27 (24 corrigidos, 2 documentados, 1 falso positivo) |
+| CRITICAL | 4 (D, A, E3, X2) — todos corrigidos |
+| HIGH | 11 corrigidos (B, E2, E4, F1, F2, G1, H1, H2, X1, X3, X5) + 1 documentado (C) |
+| MEDIUM | 6 (H3, I1, I2, X6, X10, X4-defensivo) |
+| LOW | 3 (J1, J2, X7) + documentados C/X9 + falso positivo X8 |
+| Suíte completa | **207/207 — 27 suítes** |
+| Gates | typecheck ✅ lint ✅ build ✅ test ✅ (`pnpm test` = `-w 2 --testTimeout=60000`) |
+| Commits da missão | 33 (`13c2a8b..ef641a0`), commit por bug |
 | Restrição PSP | gateway/settlement **intocado** |
 
 Evidências brutas: `/tmp/opencode/qa{4,5,6,7}_{red,green}.log`,
-`qa5_explain_{before,after,index_proof}.log` e logs citados por bug.
+`qa5_explain_{before,after,index_proof}.log`, `/tmp/opencode/qax_red.log`
+(RED X: 8/8), `qax_green.log` (GREEN X: 8/8) e logs citados por bug.
 Relatório de desempenho: `PERFORMANCE_REPORT.md`.
