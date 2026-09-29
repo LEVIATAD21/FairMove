@@ -175,12 +175,27 @@ export async function setDriverAvailability(
     .where(eq(drivers.id, driverId));
 }
 
-/** Atualiza a posição do motorista (aceita coordenadas em texto ou número). */
+/**
+ * Atualiza a posição do motorista.
+ *
+ * BUG-X4 (defense-in-depth): as duas entradas de produção já validam —
+ * rota HTTP via DriverLocationSchema (±90/±180) e WebSocket via
+ * interpretClientMessage (isValidCoordinate + faixa) — mas o engine era o
+ * único ponto que gravava qualquer number incluindo 999/NaN. Coordenada fora
+ * de faixa polui o matching (ST_MakePoint com lat 999) e impede corridas de
+ * achar o motorista; agora o engine também rejeita.
+ */
 export async function updateDriverLocation(
   driverId: string,
   lat: number,
   lng: number
 ): Promise<void> {
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+    throw new Error(`Invalid latitude: ${lat}. Must be between -90 and 90.`);
+  }
+  if (!Number.isFinite(lng) || lng < -180 || lng > 180) {
+    throw new Error(`Invalid longitude: ${lng}. Must be between -180 and 180.`);
+  }
   await db
     .update(drivers)
     .set({
