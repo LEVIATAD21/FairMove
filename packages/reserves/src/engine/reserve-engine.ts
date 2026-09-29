@@ -104,6 +104,13 @@ function assertCents(amountCents: number): number {
  *
  * `driverId` armazena o **usuário** do motorista (users.id), o mesmo identificador
  * usado por carteiras e assinaturas.
+ *
+ * BUG-X9 (docs): **não existe `moveBetweenBuckets`** — movimentação entre
+ * buckets só via SQL direto/UPGRADE. Motivo: cada bucket tem semântica
+ * própria (emergency_usage é gasto; fuel/maintenance/etc. são reservas) e
+ * aceitar transferir livremente permitiria usar "fuel" como giro de
+ * "emergency". Se um dia precisar de transferência, ela deve nascer com
+ * regra (ex.: só para o bucket de emergência, com ledger audit trail).
  */
 export class ReserveEngine {
   async getReserve(driverUserId: string, exec: Exec = db) {
