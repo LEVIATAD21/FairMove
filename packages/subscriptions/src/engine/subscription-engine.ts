@@ -340,9 +340,9 @@ export class SubscriptionEngine {
             tx
           );
 
-          // …e nos buckets da reserva
-          await reserveEngine.contributeToReserve(userId, fee.reserveShare / 100, "emergency", tx);
-          await reserveEngine.recordContribution(userId, fee.reserveShare / 100, "emergency", tx, {
+          // …e nos buckets da reserva (BUG-X1: centavos direto, sem /100)
+          await reserveEngine.contributeToReserve(userId, fee.reserveShare, "emergency", tx);
+          await reserveEngine.recordContribution(userId, fee.reserveShare, "emergency", tx, {
             ledgerTransactionId: reserveMove.transactionId,
           });
 

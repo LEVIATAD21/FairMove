@@ -77,11 +77,23 @@ function normalizePurpose(purpose?: string): ReservePurpose {
   );
 }
 
-function toCents(amount: number): number {
-  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
-    throw new ReservePurposeError("Amount must be a positive number");
+/**
+ * BUG-X1: a API era em "reais" — o caminho da mensalidade passava
+ * `fee.reserveShare / 100` (centavos→reais) e este módulo reverte com
+ * `toCents` (reais→centavos). Roundtrip era lossless, mas o contrato
+ * "centavos vestidos de reais" é um footgun de 100x. Agora a engine é
+ * NATIVA em centavos: a entrada já é o valor persistido.
+ */
+function assertCents(amountCents: number): number {
+  if (
+    typeof amountCents !== "number" ||
+    !Number.isFinite(amountCents) ||
+    !Number.isInteger(amountCents) ||
+    amountCents <= 0
+  ) {
+    throw new ReservePurposeError("Amount must be a positive integer number of cents");
   }
-  return Math.round(amount * 100);
+  return amountCents;
 }
 
 /**
@@ -133,14 +145,15 @@ export class ReserveEngine {
   /**
    * Contribui para a reserva (buckets).
    * Não move dinheiro da carteira — combine com `walletEngine` numa transação.
+   * @param amountCents parcela em CENTAVOS (ex.: 4900 = R$49,00).
    */
   async contributeToReserve(
     driverUserId: string,
-    amount: number,
+    amountCents: number,
     purpose?: string,
     exec: Exec = db
   ) {
-    const cents = toCents(amount);
+    const cents = assertCents(amountCents);
     const bucket = PURPOSE_COLUMN[normalizePurpose(purpose)];
 
     await this.initializeReserve(driverUserId, exec);
@@ -165,12 +178,12 @@ export class ReserveEngine {
    */
   async payoutFromReserve(
     driverUserId: string,
-    amount: number,
+    amountCents: number,
     purpose?: string,
     exec: Exec = db,
     options: { ledgerTransactionId?: string } = {}
   ) {
-    const cents = toCents(amount);
+    const cents = assertCents(amountCents);
     const normalized = normalizePurpose(purpose);
     const bucket = PURPOSE_COLUMN[normalized];
 
@@ -222,12 +235,12 @@ export class ReserveEngine {
   /** Registra uma contribuição no histórico (chame junto com o wallet move). */
   async recordContribution(
     driverUserId: string,
-    amount: number,
+    amountCents: number,
     purpose: string | undefined,
     exec: Exec = db,
     options: { ledgerTransactionId?: string } = {}
   ) {
-    const cents = toCents(amount);
+    const cents = assertCents(amountCents);
     const reserve = await this.getReserve(driverUserId, exec);
     const transactionId = options.ledgerTransactionId ?? uuidv4();
 

@@ -94,8 +94,8 @@ router.post(
           { description: `Reserve contribution (${purpose || "emergency"})` },
           tx
         );
-        await reserveEngine.contributeToReserve(driverId, amount, purpose, tx);
-        await reserveEngine.recordContribution(driverId, amount, purpose, tx, {
+        await reserveEngine.contributeToReserve(driverId, cents, purpose, tx);
+        await reserveEngine.recordContribution(driverId, cents, purpose, tx, {
           ledgerTransactionId: walletMove.transactionId,
         });
         return walletMove;
@@ -130,7 +130,7 @@ router.post(
 
       const result = await db.transaction(async (tx: Transaction) => {
         // Validação de bucket/lock antes de mexer no dinheiro
-        const updated = await reserveEngine.payoutFromReserve(driverId, amount, purpose, tx);
+        const updated = await reserveEngine.payoutFromReserve(driverId, cents, purpose, tx);
         const walletMove = await walletEngine.moveReserveToAvailableCents(
           driverId,
           cents,
