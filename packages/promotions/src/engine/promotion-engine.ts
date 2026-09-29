@@ -230,7 +230,8 @@ const APPLICABLE_STATUSES = ["REQUESTED", "SEARCHING", "DRIVER_ASSIGNED"];
 
 /**
  * Aplica um cupom a uma corrida e persiste o novo preço.
- * Idempotente por corrida: reaplicar o mesmo cupom não cobra em dobro.
+ * Idempotente por corrida: reaplicar o MESMO cupom não cobra em dobro;
+ * um cupom DIFERENTE responde 409 (uma corrida = um cupom).
  */
 export async function applyPromotion(
   rideId: string,
@@ -265,6 +266,19 @@ export async function applyPromotion(
     .limit(1);
 
   if (existingRedemption.length > 0) {
+    // BUG-X6: o retorno idempotente só é honesto para o MESMO cupom (retry de
+    // rede). Um código DIFERENTE era aceito em silêncio com a resposta do
+    // primeiro — discountApplied=true enganando o passageiro a pensar que o
+    // segundo cupom aplicou. Uma corrida aceita UM cupom: código diferente → 409.
+    const appliedCode = existingRedemption[0].redemption_code ?? "";
+    if (appliedCode && couponCode!.trim().toUpperCase() !== appliedCode.trim().toUpperCase()) {
+      throw Object.assign(
+        new Error(
+          `Ride already has a promotion applied (${appliedCode}). Only one coupon per ride.`
+        ),
+        { statusCode: 409 }
+      );
+    }
     const discountCents = Number(existingRedemption[0].amount_discounted);
     // ride.finalPassengerPrice/driverCredit JÁ contêm o desconto quando ele
     // foi persistido (promotionDiscount > 0). Recalcular "preço - desconto"
