@@ -5,9 +5,9 @@ import compression from "compression";
 import cors from "cors";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import Redis from "ioredis";
-import { db } from "@fairmove/shared-db";
+import { db, subscriptions } from "@fairmove/shared-db";
 import { authRouter } from "../../packages/auth/src/routes";
 import { usersRouter } from "../../packages/users/src/routes";
 import { rideRouter } from "../../packages/rides/src/routes";
@@ -22,6 +22,7 @@ import { fraudRouter } from "../../packages/fraud/src/routes";
 import { subscriptionRouter } from "../../packages/subscriptions/src/routes";
 import { eventsRouter } from "../../packages/events/src/routes";
 import { eventScheduler } from "../../packages/events/src/scheduler";
+import { subscriptionEngine } from "../../packages/subscriptions/src/engine/subscription-engine";
 import { CronJob } from "cron";
 import { expireStaleRides } from "../../packages/rides/src/expiry";
 import { attachRealtimeServer } from "../../packages/realtime/src/ws/server";
@@ -279,9 +280,70 @@ const rideExpiryJob =
           });
       });
 
+// BUG-C: cobrança automática da mensalidade — antes só existia o disparo
+// manual/admin (a assinatura vencia e ninguém cobrava). Job diário às 02:00;
+// ligado com BILLING_ENABLED=true (default: desligado — dev/teste não cobra).
+// Seguro rodar diariamente: chargeMonthlyFee só cobra quando
+// checkTrialExpiration libera (mês vencido) e é idempotente por período
+// (chave `subscription:<userId>:<periodo>` + débito com idempotency key).
+const billingJob =
+  process.env.BILLING_ENABLED !== "true"
+    ? null
+    : new CronJob("0 2 * * *", () => {
+        void (async () => {
+          console.log("[Billing Job] Iniciando cobrança de mensalidades...");
+          try {
+            const activeSubscriptions = await db
+              .select({ userId: subscriptions.userId })
+              .from(subscriptions)
+              .where(eq(subscriptions.status, "active"));
+
+            let charged = 0;
+            let trialOrNotDue = 0;
+            let failed = 0;
+
+            for (const sub of activeSubscriptions) {
+              try {
+                const result = await subscriptionEngine.chargeMonthlyFee(sub.userId);
+                if (result.success) {
+                  if ((result.amountChargedCents ?? 0) > 0) charged++;
+                  else trialOrNotDue++;
+                } else if (
+                  result.message?.includes("Não é hora de cobrar") ||
+                  result.message?.includes("Assinatura ativa não encontrada")
+                ) {
+                  trialOrNotDue++;
+                } else {
+                  failed++;
+                  console.error(`[Billing Job] ${sub.userId}: ${result.message}`);
+                }
+              } catch (error) {
+                failed++;
+                console.error(
+                  `[Billing Job] Erro ao cobrar ${sub.userId}:`,
+                  error instanceof Error ? error.message : String(error)
+                );
+              }
+            }
+
+            console.log(
+              `[Billing Job] Concluído: ${charged} cobrado(s), ` +
+                `${trialOrNotDue} sem vencimento, ${failed} falha(s)`
+            );
+          } catch (error) {
+            console.error(
+              "[Billing Job] Erro crítico:",
+              error instanceof Error ? error.message : String(error)
+            );
+          }
+        })();
+      });
+
 const server = app.listen(port, () => {
   eventScheduler.start();
   rideExpiryJob?.start();
+  billingJob?.start();
+  if (billingJob) console.log("[Billing Job] Agendado para 02:00 diariamente");
   console.log(`FairMove backend running on port ${port}`);
 });
 
@@ -308,6 +370,7 @@ void (async () => {
 function shutdown(signal: string): void {
   eventScheduler.stop();
   rideExpiryJob?.stop();
+  billingJob?.stop();
   console.log(`${signal} received, shutting down gracefully...`);
   void realtime.close().catch(() => undefined);
   server.close(() => {
