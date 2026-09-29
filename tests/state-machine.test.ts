@@ -74,8 +74,7 @@ describe("Ride State Machine", () => {
       "CANCELLED_BY_DRIVER",
       "CANCELLED_BY_SYSTEM",
       "EXPIRED",
-      "DISPUTED",
     ];
-    expect(statuses.length).toBe(13);
+    expect(statuses.length).toBe(12);
   });
 });

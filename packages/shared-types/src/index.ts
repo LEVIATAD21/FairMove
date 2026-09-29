@@ -10,8 +10,7 @@ export type RideStatus =
   | "CANCELLED_BY_PASSENGER"
   | "CANCELLED_BY_DRIVER"
   | "CANCELLED_BY_SYSTEM"
-  | "EXPIRED"
-  | "DISPUTED";
+  | "EXPIRED";
 
 export type VehicleType = "CAR" | "MOTORCYCLE";
 

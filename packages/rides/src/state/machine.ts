@@ -29,7 +29,6 @@ const validTransitions: Record<string, string[]> = {
   CANCELLED_BY_DRIVER: [],
   CANCELLED_BY_SYSTEM: [],
   EXPIRED: [],
-  DISPUTED: [],
 };
 
 export type RideStatus = keyof typeof validTransitions;

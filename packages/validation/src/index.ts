@@ -14,7 +14,6 @@ export const RideStatusSchema = z.enum([
   "CANCELLED_BY_DRIVER",
   "CANCELLED_BY_SYSTEM",
   "EXPIRED",
-  "DISPUTED",
 ]);
 
 export const PriceQuoteSchema = z.object({
