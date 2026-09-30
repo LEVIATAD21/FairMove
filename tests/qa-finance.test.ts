@@ -132,7 +132,10 @@ async function createRide(actor: TestActor): Promise<string> {
     .send({
       pickupLocationLat: PICKUP.lat,
       pickupLocationLng: PICKUP.lng,
-      dropoffLocationLat: DROPOFF.lat + Math.random() * 0.001,
+      // Rota FIXA: F-0 compara o preço da corrida com o quote da MESMA rota —
+      // offset aleatório aqui fazia os dois arredondamentos divergirem em 1
+      // centavo (flaky: quote 1463 vs ride 1462).
+      dropoffLocationLat: DROPOFF.lat,
       dropoffLocationLng: DROPOFF.lng,
     });
   if (res.status !== 201) {
