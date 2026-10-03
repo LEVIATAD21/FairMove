@@ -216,10 +216,42 @@ export const api = {
     return data.user;
   },
 
-  async register(name: string, email: string, password: string): Promise<SessionUser> {
-    const data = await request<LoginResponse>("/auth/register", {
+  /**
+   * Registro. Com REQUIRE_EMAIL_VERIFICATION=true o servidor responde
+   * { verificationRequired: true } SEM tokens — a sessão só é salva após
+   * verifyEmail().
+   */
+  async register(
+    name: string,
+    email: string,
+    password: string
+  ): Promise<{ user: SessionUser; verificationRequired: boolean; verificationCode?: string }> {
+    const data = await request<
+      LoginResponse & { verificationRequired?: boolean; verificationCode?: string }
+    >("/auth/register", {
       method: "POST",
       body: { name, email, password },
+      auth: false,
+    });
+    if (data.verificationRequired) {
+      return {
+        user: data.user,
+        verificationRequired: true,
+        verificationCode: data.verificationCode,
+      };
+    }
+    await saveSession(
+      { accessToken: data.token, refreshToken: data.refreshToken },
+      data.user
+    );
+    return { user: data.user, verificationRequired: false };
+  },
+
+  /** Confirma o código de 6 dígitos e salva a sessão. */
+  async verifyEmail(email: string, code: string): Promise<SessionUser> {
+    const data = await request<LoginResponse>("/auth/verify-email", {
+      method: "POST",
+      body: { email, code },
       auth: false,
     });
     await saveSession(
@@ -227,6 +259,15 @@ export const api = {
       data.user
     );
     return data.user;
+  },
+
+  /** Pede novo código (resposta genérica; código só em dev via EXPOSE_*). */
+  resendVerification(email: string): Promise<{ verificationCode?: string }> {
+    return request("/auth/resend-verification", {
+      method: "POST",
+      body: { email },
+      auth: false,
+    });
   },
 
   async logout(): Promise<void> {

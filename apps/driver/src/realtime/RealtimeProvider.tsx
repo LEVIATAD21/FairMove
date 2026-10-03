@@ -14,6 +14,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { api } from "../services/api";
 import { RealTimeClient } from "../services/realtime";
 import { formatCoord, type RideRequest } from "../logic/ride-request";
+import { OfflineRouteManager } from "../logic/offline-route";
 
 /** Intervalo de TX de localização do motorista (único timer do app, outbound). */
 const LOCATION_TX_INTERVAL_MS = 3_000;
@@ -141,6 +142,8 @@ export function RealtimeProvider({ children }: { children: ReactNode }) {
       if (typeof rideId !== "string") return;
       clearPendingRequest();
       setActiveRide({ rideId, status: "DRIVER_ASSIGNED" });
+      // CORREÇÃO 5: baixa a rota para navegação offline imediatamente.
+      void OfflineRouteManager.downloadRoute(rideId);
       setError(null);
     });
 
@@ -153,6 +156,8 @@ export function RealtimeProvider({ children }: { children: ReactNode }) {
         rideStatus.startsWith("CANCELLED") ||
         rideStatus === "FAILED"
       ) {
+        // CORREÇÃO 5: corrida encerrada → descarta o cache local.
+        void OfflineRouteManager.clearOfflineRoute(rideId);
         setActiveRide((current) => (current?.rideId === rideId ? null : current));
         setOnlineState(false);
         return;
@@ -205,6 +210,13 @@ export function RealtimeProvider({ children }: { children: ReactNode }) {
       clearInterval(timer);
     };
   }, [online, status]);
+
+  // CORREÇÃO 5: reconexão → sincroniza rotas cacheadas e limpa as encerradas.
+  useEffect(() => {
+    if (status !== "authed") return;
+    const unsubscribe = OfflineRouteManager.subscribeOnReconnect();
+    return unsubscribe;
+  }, [status]);
 
   const setOnline = useCallback(async (next: boolean) => {
     setError(null);

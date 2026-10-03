@@ -25,13 +25,90 @@ export const PriceQuoteSchema = z.object({
 
 export const VehicleTypeSchema = z.enum(["car", "motorcycle", "CAR", "MOTORCYCLE"]);
 
+/**
+ * Placa Mercosul (ABC1D23) ou antiga (ABC1234) — case-insensitive,
+ * normalizada para MAIÚSCULAS. Formato livre ("AB") era aceito antes.
+ */
+export const PlateSchema = z
+  .string()
+  .trim()
+  .transform((v) => v.toUpperCase())
+  .refine((v) => /^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$/.test(v), {
+    message: "Placa inválida (use formato Mercosul ABC1D23 ou antigo ABC1234)",
+  });
+
+/** CNH: 11 dígitos (sem máscara). */
+export const CnhNumberSchema = z
+  .string()
+  .trim()
+  .transform((v) => v.replace(/\D/g, ""))
+  .refine((v) => /^\d{11}$/.test(v), { message: "CNH deve ter 11 dígitos" });
+
+/** Renavam: 11 dígitos. */
+export const RenavamSchema = z
+  .string()
+  .trim()
+  .transform((v) => v.replace(/\D/g, ""))
+  .refine((v) => /^\d{11}$/.test(v), { message: "Renavam deve ter 11 dígitos" });
+
 export const DriverSchema = z.object({
-  plate: z.string().trim().min(2).max(10),
+  plate: PlateSchema,
   brand: z.string().trim().min(1).max(50),
   model: z.string().trim().min(1).max(50),
   year: z.coerce.number().int().min(1990).max(new Date().getFullYear() + 1),
   color: z.string().trim().max(30).optional(),
   vehicleType: VehicleTypeSchema,
+});
+
+/** Tipos de documento exigidos da CONDUTORA do programa. */
+export const DriverDocTypeSchema = z.enum([
+  "cnh_front",
+  "cnh_back",
+  "vehicle_front",
+  "vehicle_back",
+  "vehicle_side",
+  "crlv",
+]);
+
+export const ALLOWED_DOC_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
+/** ~1,5 MB de base64 por imagem (4/3 do tamanho binário ≈ 1,1 MB). */
+export const MAX_DOC_DATA_CHARS = 1_500_000;
+
+export const DriverDocumentSchema = z
+  .object({
+    docType: DriverDocTypeSchema,
+    mimeType: z.enum(ALLOWED_DOC_MIME_TYPES),
+    data: z.string().min(64).max(MAX_DOC_DATA_CHARS),
+    cnhNumber: CnhNumberSchema.optional(),
+    cnhExpiresOn: z.coerce.date().optional(),
+    renavam: RenavamSchema.optional(),
+  })
+  .superRefine((doc, ctx) => {
+    if (doc.docType === "cnh_front") {
+      if (!doc.cnhNumber) {
+        ctx.addIssue({ code: "custom", path: ["cnhNumber"], message: "cnhNumber obrigatório para cnh_front" });
+      }
+      if (!doc.cnhExpiresOn) {
+        ctx.addIssue({ code: "custom", path: ["cnhExpiresOn"], message: "cnhExpiresOn obrigatório para cnh_front" });
+      } else if (doc.cnhExpiresOn.getTime() <= Date.now()) {
+        ctx.addIssue({ code: "custom", path: ["cnhExpiresOn"], message: "CNH vencida" });
+      }
+    }
+    if (doc.docType === "crlv" && !doc.renavam) {
+      ctx.addIssue({ code: "custom", path: ["renavam"], message: "renavam obrigatório para crlv" });
+    }
+    if (!doc.data.startsWith(`data:${doc.mimeType};base64,`)) {
+      ctx.addIssue({ code: "custom", path: ["data"], message: "data URL não bate com mimeType" });
+    }
+  });
+
+export const SubmitDriverDocumentsSchema = z.object({
+  documents: z.array(DriverDocumentSchema).min(6).max(12),
+});
+
+export const ApplicationActionSchema = z.object({
+  action: z.enum(["approve", "reject", "suspend", "reinstate"]),
+  reason: z.string().trim().min(3).max(500).optional(),
 });
 
 export const PasswordSchema = z
@@ -55,6 +132,12 @@ export const LoginSchema = z.object({
 });
 
 export const ForgotPasswordSchema = z.object({ email: EmailSchema });
+
+/** Código de verificação de e-mail: 6 dígitos. */
+export const VerifyEmailSchema = z.object({
+  email: EmailSchema,
+  code: z.string().trim().regex(/^\d{6}$/, "Code must be 6 digits"),
+});
 
 export const ResetPasswordSchema = z.object({
   // O emissor gera randomBytes(32).toString("hex") = 64 chars hex (não UUID).

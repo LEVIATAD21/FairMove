@@ -125,7 +125,7 @@ describe("QA audit: código morto e higiene de código", () => {
 
   test("[J-4] TODO/FIXME só no allowlist documentado", () => {
     const allowlist = [
-      "packages/auth/src/routes.ts:344", // integracao de provedor de e-mail (pendencia real)
+      "packages/auth/src/routes.ts:461", // integracao de provedor de e-mail (pendencia real)
     ];
     const violations: string[] = [];
     for (const file of files) {

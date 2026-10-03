@@ -225,6 +225,81 @@ router.get("/:rideId", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * Geometria da rota para CACHE OFFLINE do motorista (CORREÇÃO 5).
+ * Tenta OSRM público (geometria real); se indisponível, cai para uma linha
+ * reta interpolada — o cliente guarda o resultado e navega sem internet.
+ */
+router.get("/:rideId/route", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { rideId } = req.params as { rideId: string };
+    const result = await loadRideForUser(rideId, req.user!);
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.message });
+      return;
+    }
+    const ride = result.ride;
+    const pickup = { lat: Number(ride.pickupLocationLat), lng: Number(ride.pickupLocationLng) };
+    const dropoff = { lat: Number(ride.dropoffLocationLat), lng: Number(ride.dropoffLocationLng) };
+
+    const straightLine = (): Array<{ lat: number; lng: number }> => {
+      const steps = 24;
+      return Array.from({ length: steps + 1 }, (_, i) => ({
+        lat: pickup.lat + ((dropoff.lat - pickup.lat) * i) / steps,
+        lng: pickup.lng + ((dropoff.lng - pickup.lng) * i) / steps,
+      }));
+    };
+    const straightFallback = () => {
+      const distanceKm = haversineKm(pickup, dropoff);
+      return {
+        rideId,
+        coordinates: straightLine(),
+        distanceMeters: Math.round(distanceKm * 1000),
+        durationSeconds: Math.round(estimateDurationMinutes(distanceKm) * 60),
+        source: "straight" as const,
+      };
+    };
+
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      const osrmUrl =
+        `https://router.project-osrm.org/route/v1/driving/` +
+        `${pickup.lng},${pickup.lat};${dropoff.lng},${dropoff.lat}` +
+        `?overview=full&geometries=geojson`;
+      // Cast: @types/node e lib.dom expõem AbortSignal incompatíveis neste tsconfig.
+      const osrmRes = await fetch(osrmUrl, {
+        signal: controller.signal as unknown as RequestInit["signal"],
+      });
+      clearTimeout(timer);
+      if (!osrmRes.ok) throw new Error(`OSRM HTTP ${osrmRes.status}`);
+      const osrm = (await osrmRes.json()) as {
+        code?: string;
+        routes?: Array<{
+          distance: number;
+          duration: number;
+          geometry: { coordinates: Array<[number, number]> };
+        }>;
+      };
+      const route = osrm.routes?.[0];
+      if (osrm.code !== "Ok" || !route) throw new Error("OSRM sem rota");
+
+      res.json({
+        rideId,
+        coordinates: route.geometry.coordinates.map(([lng, lat]) => ({ lat, lng })),
+        distanceMeters: Math.round(route.distance),
+        durationSeconds: Math.round(route.duration),
+        source: "osrm" as const,
+      });
+    } catch {
+      res.json(straightFallback());
+    }
+  } catch (error) {
+    console.error("Get ride route error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Motorista aceita a corrida
 router.post("/:rideId/accept", requireAuth, async (req: Request, res: Response) => {
   try {
@@ -245,6 +320,16 @@ router.post("/:rideId/accept", requireAuth, async (req: Request, res: Response) 
     const driver = await getDriverByUserId(user.id);
     if (!driver) {
       res.status(404).json({ error: "Driver profile not found" });
+      return;
+    }
+
+    // CORREÇÃO 1/3: candidato PENDING/REJECTED/SUSPENDED não aceita corrida —
+    // segunda camada além do gate de online em /matching/driver/status.
+    if (user.role === "driver" && driver.approvalStatus !== "approved") {
+      res.status(403).json({
+        error: "Driver not approved",
+        approvalStatus: driver.approvalStatus,
+      });
       return;
     }
 

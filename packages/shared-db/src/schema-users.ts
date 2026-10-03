@@ -28,14 +28,38 @@ export const drivers = pgTable(
   pendingBalance: integer("pending_balance").default(0).notNull(),
   reserveBalance: integer("reserve_balance").default(0).notNull(),
   subscriptionStatus: text("subscription_status").default("free").notNull(),
+  // Fluxo de aprovação Uber/99: todo candidato NOVO nasce "pending" e só
+  // opera (online/aceitar corrida) com "approved". "approved" como DEFAULT
+  // preserva contas existentes e fixtures de teste (backfill da migração).
+  approvalStatus: text("approval_status").default("approved").notNull(),
+  approvalReason: text("approval_reason"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (t) => ({
     // BUG-H2: filtro de matching (online + disponível) era Seq Scan a cada busca.
     statusAvailableIdx: index("idx_drivers_status_available").on(t.status, t.available),
+    approvalStatusIdx: index("idx_drivers_approval_status").on(t.approvalStatus),
   })
 );
+
+/** Documentos enviados pelo candidato a motorista (CNH, CRLV, fotos do veículo). */
+export const driverDocuments = pgTable("driver_documents", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  driverId: text("driver_id")
+    .notNull()
+    .references(() => drivers.id, { onDelete: "cascade" }),
+  docType: text("doc_type").notNull(), // cnh_front | cnh_back | vehicle_front | vehicle_back | vehicle_side | crlv
+  mimeType: text("mime_type").notNull(),
+  data: text("data").notNull(), // data URL base64 (imagem; limite de tamanho validado na rota)
+  cnhNumber: text("cnh_number"),
+  cnhExpiresOn: timestamp("cnh_expires_on"),
+  renavam: text("renavam"),
+  status: text("status").default("submitted").notNull(), // submitted | accepted | rejected
+  rejectionReason: text("rejection_reason"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
 
 export const vehicles = pgTable("vehicles", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
@@ -55,3 +79,4 @@ export const vehicles = pgTable("vehicles", {
 export type Profile = typeof profiles.$inferSelect;
 export type Driver = typeof drivers.$inferSelect;
 export type Vehicle = typeof vehicles.$inferSelect;
+export type DriverDocument = typeof driverDocuments.$inferSelect;

@@ -182,6 +182,28 @@ export type RideHistoryItem = {
   dropoffLocationLng: string | null;
 };
 
+export type DriverDocumentPayload = {
+  docType:
+    | "cnh_front"
+    | "cnh_back"
+    | "vehicle_front"
+    | "vehicle_back"
+    | "vehicle_side"
+    | "crlv";
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  data: string;
+  cnhNumber?: string;
+  cnhExpiresOn?: string;
+  renavam?: string;
+};
+
+export type DriverDocumentItem = DriverDocumentPayload & {
+  id: string;
+  status: string;
+  rejectionReason: string | null;
+  createdAt: string;
+};
+
 export type SubscriptionResponse =
   | { hasSubscription: false; status: string }
   | {
@@ -211,10 +233,42 @@ export const api = {
     return data.user;
   },
 
-  async register(name: string, email: string, password: string): Promise<SessionUser> {
-    const data = await request<LoginResponse>("/auth/register", {
+  /**
+   * Registro. Com REQUIRE_EMAIL_VERIFICATION=true o servidor responde
+   * { verificationRequired: true } SEM tokens — a sessão só é salva após
+   * verifyEmail(). Retorna flag para a tela decidir o próximo passo.
+   */
+  async register(
+    name: string,
+    email: string,
+    password: string
+  ): Promise<{ user: SessionUser; verificationRequired: boolean; verificationCode?: string }> {
+    const data = await request<
+      LoginResponse & { verificationRequired?: boolean; verificationCode?: string }
+    >("/auth/register", {
       method: "POST",
       body: { name, email, password },
+      auth: false,
+    });
+    if (data.verificationRequired) {
+      return {
+        user: data.user,
+        verificationRequired: true,
+        verificationCode: data.verificationCode,
+      };
+    }
+    await saveSession(
+      { accessToken: data.token, refreshToken: data.refreshToken },
+      data.user
+    );
+    return { user: data.user, verificationRequired: false };
+  },
+
+  /** Confirma o código de 6 dígitos e salva a sessão. */
+  async verifyEmail(email: string, code: string): Promise<SessionUser> {
+    const data = await request<LoginResponse>("/auth/verify-email", {
+      method: "POST",
+      body: { email, code },
       auth: false,
     });
     await saveSession(
@@ -222,6 +276,15 @@ export const api = {
       data.user
     );
     return data.user;
+  },
+
+  /** Pede novo código (resposta genérica; código só em dev via EXPOSE_*). */
+  resendVerification(email: string): Promise<{ verificationCode?: string }> {
+    return request("/auth/resend-verification", {
+      method: "POST",
+      body: { email },
+      auth: false,
+    });
   },
 
   async logout(): Promise<void> {
@@ -281,5 +344,48 @@ export const api = {
   /** Aceita a oferta de corrida (POST /rides/:id/accept). */
   acceptRide(rideId: string): Promise<{ ride?: RideHistoryItem; status?: string }> {
     return request(`/rides/${rideId}/accept`, { method: "POST" });
+  },
+
+  /** Onboard do veículo (nasce PENDING — bloqueado até aprovação do admin). */
+  driverOnboard(data: {
+    plate: string;
+    brand: string;
+    model: string;
+    year: number;
+    color?: string;
+    vehicleType: string;
+  }): Promise<{ driverId: string; vehicleId: string; approvalStatus: string }> {
+    return request("/users/driver/onboard", { method: "POST", body: data });
+  },
+
+  /** Envia o conjunto completo de documentos (CNH, fotos, CRLV). */
+  submitDriverDocuments(
+    documents: DriverDocumentPayload[]
+  ): Promise<{ count: number; approvalStatus: string }> {
+    return request("/users/driver/documents", { method: "POST", body: { documents } });
+  },
+
+  /** Documentos enviados + status da aprovação. */
+  getDriverDocuments(): Promise<{
+    documents: DriverDocumentItem[];
+    approvalStatus: string;
+  }> {
+    return request("/users/driver/documents");
+  },
+
+  /** Corrida completa (usada pelo cache offline para origem/destino/status). */
+  getRide(rideId: string): Promise<RideHistoryItem & { status: string }> {
+    return request(`/rides/${rideId}`);
+  },
+
+  /** Geometria da rota para cache offline (OSRM com fallback reto). */
+  getRideRoute(rideId: string): Promise<{
+    rideId: string;
+    coordinates: Array<{ lat: number; lng: number }>;
+    distanceMeters: number;
+    durationSeconds: number | null;
+    source: "osrm" | "straight";
+  }> {
+    return request(`/rides/${rideId}/route`);
   },
 };

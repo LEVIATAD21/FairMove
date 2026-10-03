@@ -28,7 +28,18 @@ export default function Register() {
     setBusy(true);
     setError(null);
     try {
-      await register(name.trim(), email.trim(), password);
+      const result = await register(name.trim(), email.trim(), password);
+      if (result.verificationRequired) {
+        // REQUIRE_EMAIL_VERIFICATION: sem sessão até confirmar o código.
+        router.push({
+          pathname: "/auth/verify",
+          params: {
+            email: email.trim().toLowerCase(),
+            devCode: result.verificationCode ?? "",
+          },
+        });
+        return;
+      }
       router.replace("/passenger");
     } catch (cause) {
       const message =

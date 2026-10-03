@@ -26,7 +26,18 @@ export default function DriverRegister() {
     setBusy(true);
     setError(null);
     try {
-      await register(name.trim(), email.trim().toLowerCase(), password);
+      const result = await register(name.trim(), email.trim().toLowerCase(), password);
+      if (result.verificationRequired) {
+        // REQUIRE_EMAIL_VERIFICATION: sem sessão até confirmar o código.
+        router.push({
+          pathname: "/auth/verify",
+          params: {
+            email: email.trim().toLowerCase(),
+            devCode: result.verificationCode ?? "",
+          },
+        });
+        return;
+      }
       router.replace("/driver");
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {

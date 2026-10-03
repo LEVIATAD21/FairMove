@@ -4,8 +4,8 @@ export type { Database, Transaction, Executor } from "./db";
 export { users, sessions, verificationTokens, onboardingCompletion } from "./schema-auth";
 export type { User, Session, VerificationToken, OnboardingCompletion } from "./schema-auth";
 
-export { profiles, drivers, vehicles } from "./schema-users";
-export type { Profile, Driver, Vehicle } from "./schema-users";
+export { profiles, drivers, vehicles, driverDocuments } from "./schema-users";
+export type { Profile, Driver, Vehicle, DriverDocument } from "./schema-users";
 
 export { rides, rideLocationEvents } from "./schema-rides";
 export type { Ride, RideLocationEvent } from "./schema-rides";

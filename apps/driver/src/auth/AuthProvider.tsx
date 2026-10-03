@@ -16,7 +16,13 @@ type AuthContextValue = {
   status: AuthStatus;
   user: SessionUser | null;
   login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string) => Promise<void>;
+  register: (
+    name: string,
+    email: string,
+    password: string
+  ) => Promise<{ verificationRequired: boolean; verificationCode?: string }>;
+  verifyEmail: (email: string, code: string) => Promise<void>;
+  resendVerification: (email: string) => Promise<{ verificationCode?: string }>;
   logout: () => Promise<void>;
 };
 
@@ -24,7 +30,9 @@ const AuthContext = createContext<AuthContextValue>({
   status: "restoring",
   user: null,
   login: async () => undefined,
-  register: async () => undefined,
+  register: async () => ({ verificationRequired: false }),
+  verifyEmail: async () => undefined,
+  resendVerification: async () => ({}),
   logout: async () => undefined,
 });
 
@@ -85,8 +93,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const register = useCallback(async (name: string, email: string, password: string) => {
     const created = await api.register(name, email, password);
-    setUser(created);
+    if (created.verificationRequired) {
+      // Sem sessão ainda: a tela de verificação leva o usuário até verifyEmail.
+      return {
+        verificationRequired: true as const,
+        verificationCode: created.verificationCode,
+      };
+    }
+    setUser(created.user);
     setStatus("authed");
+    return { verificationRequired: false as const };
+  }, []);
+
+  const verifyEmail = useCallback(async (email: string, code: string) => {
+    const verified = await api.verifyEmail(email, code);
+    setUser(verified);
+    setStatus("authed");
+  }, []);
+
+  const resendVerification = useCallback(async (email: string) => {
+    return api.resendVerification(email);
   }, []);
 
   const logout = useCallback(async () => {
@@ -96,8 +122,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ status, user, login, register, logout }),
-    [status, user, login, register, logout]
+    () => ({ status, user, login, register, verifyEmail, resendVerification, logout }),
+    [status, user, login, register, verifyEmail, resendVerification, logout]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

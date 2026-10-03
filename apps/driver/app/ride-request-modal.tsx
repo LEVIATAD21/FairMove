@@ -4,6 +4,7 @@ import { RideRequestSheet } from "../src/components/RideRequestSheet";
 import type { RideRequest } from "../src/logic/ride-request";
 import { api } from "../src/services/api";
 import { useRealtime } from "../src/realtime/RealtimeProvider";
+import { OfflineRouteManager } from "../src/logic/offline-route";
 
 /**
  * Rota global de solicitação de corrida — `transparentModal` com blur +
@@ -61,6 +62,8 @@ export default function RideRequestModal() {
     setAcceptError(null);
     try {
       await api.acceptRide(request.id);
+      // CORREÇÃO 5: cacheia a rota na hora (o provider reforça no ride:matched).
+      void OfflineRouteManager.downloadRoute(request.id);
       clearPendingRequest();
       router.back();
     } catch (cause) {

@@ -163,6 +163,16 @@ router.post(
         return;
       }
 
+      // CORREÇÃO 1/3: só APROVADO pode ficar online (pending/rejected/suspended
+      // ficam de fora do matching — nunca aparecem para passageiros).
+      if (status === "online" && driver[0].approvalStatus !== "approved") {
+        res.status(403).json({
+          error: "Driver not approved",
+          approvalStatus: driver[0].approvalStatus,
+        });
+        return;
+      }
+
       // BUG-G1: marcar `available: true` com corrida ativa reabria o guard de
       // accept (que só checa `driver.available`) — o motorista aceitava uma
       // 2ª corrida e ficava com DUAS corridas DRIVER_ASSIGNED simultâneas.

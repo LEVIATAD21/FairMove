@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { db, users, sessions, verificationTokens, onboardingCompletion } from "@fairmove/shared-db";
 import { eq, and, ne } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
-import { createHash, randomBytes, timingSafeEqual } from "crypto";
+import { createHash, randomBytes, randomInt, timingSafeEqual } from "crypto";
 import { sign, verify, TokenExpiredError, JsonWebTokenError } from "jsonwebtoken";
 import {
   RegisterSchema,
@@ -10,6 +10,7 @@ import {
   ForgotPasswordSchema,
   ResetPasswordSchema,
   ChangePasswordSchema,
+  VerifyEmailSchema,
   validateBody,
 } from "@fairmove/validation";
 import { hashPassword, comparePassword } from "./utils/password";
@@ -62,6 +63,33 @@ function ttlToMs(ttl: string): number {
     d: 24 * 60 * 60 * 1000,
   };
   return value * factor[unit];
+}
+
+/** Verificação de e-mail exigida apenas com REQUIRE_EMAIL_VERIFICATION=true. */
+function emailVerificationRequired(): boolean {
+  return process.env.REQUIRE_EMAIL_VERIFICATION === "true";
+}
+
+/** Expor o código na resposta só em dev (EXPOSE_VERIFICATION_CODE=true). */
+function exposeVerificationCode(): boolean {
+  return process.env.NODE_ENV !== "production" && process.env.EXPOSE_VERIFICATION_CODE === "true";
+}
+
+/**
+ * Emite código de 6 dígitos para verificação de e-mail (guarda apenas o hash,
+ * 15 min de validade). Sem provedor de e-mail integrado (pendência: SMTP/Mailgun/SES),
+ * o código só chega ao cliente via EXPOSE_VERIFICATION_CODE em desenvolvimento.
+ */
+async function issueVerificationCode(userId: string): Promise<string> {
+  await db.delete(verificationTokens).where(eq(verificationTokens.userId, userId));
+  const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
+  await db.insert(verificationTokens).values({
+    id: uuidv4(),
+    userId,
+    token: hashToken(code),
+    expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+  });
+  return code;
 }
 
 async function issueTokens(userId: string, role: string, sessionId?: string) {
@@ -140,6 +168,17 @@ router.post("/register", validateBody(RegisterSchema), async (req: Request, res:
       completedAt: new Date(),
     });
 
+    // REQUIRE_EMAIL_VERIFICATION: conta criada, MAS sem tokens até o código.
+    if (emailVerificationRequired()) {
+      const verificationCode = await issueVerificationCode(newUser.id);
+      res.status(201).json({
+        user: publicUser(newUser),
+        verificationRequired: true,
+        ...(exposeVerificationCode() ? { verificationCode } : {}),
+      });
+      return;
+    }
+
     const { accessToken, refreshToken } = await issueTokens(newUser.id, newUser.role);
 
     res.status(201).json({
@@ -167,6 +206,11 @@ router.post("/login", validateBody(LoginSchema), async (req: Request, res: Respo
     const isValidPassword = await comparePassword(password, user[0].passwordHash);
     if (!isValidPassword) {
       res.status(401).json({ error: "Invalid credentials" });
+      return;
+    }
+
+    if (emailVerificationRequired() && !user[0].emailVerifiedAt) {
+      res.status(403).json({ error: "Email not verified", verificationRequired: true });
       return;
     }
 
@@ -275,6 +319,79 @@ async function refreshHandler(req: Request, res: Response): Promise<void> {
 // Aliases: nomenclatura da spec (/refresh) e a clássica (/refresh-token)
 router.post("/refresh-token", refreshHandler);
 router.post("/refresh", refreshHandler);
+
+// Verificação de e-mail: valida código de 6 dígitos e emite tokens
+router.post("/verify-email", validateBody(VerifyEmailSchema), async (req: Request, res: Response) => {
+  try {
+    const { email, code } = req.body as { email: string; code: string };
+
+    const found = await db.select().from(users).where(eq(users.email, email));
+    if (found.length === 0 || found[0].emailVerifiedAt) {
+      res.status(400).json({ error: "Invalid verification code" });
+      return;
+    }
+
+    const tokenRows = await db
+      .select()
+      .from(verificationTokens)
+      .where(
+        and(
+          eq(verificationTokens.userId, found[0].id),
+          eq(verificationTokens.token, hashToken(code))
+        )
+      );
+
+    if (tokenRows.length === 0) {
+      res.status(400).json({ error: "Invalid verification code" });
+      return;
+    }
+    if (tokenRows[0].expiresAt && tokenRows[0].expiresAt.getTime() < Date.now()) {
+      await db.delete(verificationTokens).where(eq(verificationTokens.id, tokenRows[0].id));
+      res.status(400).json({ error: "Verification code expired" });
+      return;
+    }
+
+    await db
+      .update(users)
+      .set({ emailVerifiedAt: new Date(), updatedAt: new Date() })
+      .where(eq(users.id, found[0].id));
+    await db.delete(verificationTokens).where(eq(verificationTokens.userId, found[0].id));
+
+    const { accessToken, refreshToken } = await issueTokens(found[0].id, found[0].role);
+    res.json({
+      user: publicUser(found[0]),
+      token: accessToken,
+      refreshToken,
+    });
+  } catch (error) {
+    console.error("Verify email error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Reenviar código de verificação (resposta genérica: não revela se existe conta)
+router.post("/resend-verification", validateBody(ForgotPasswordSchema), async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body as { email: string };
+    const response = {
+      message: "If an account with this email needs verification, a new code has been sent.",
+    };
+
+    const found = await db.select().from(users).where(eq(users.email, email));
+    if (found.length > 0 && !found[0].emailVerifiedAt) {
+      const verificationCode = await issueVerificationCode(found[0].id);
+      console.info(`[verify-email] userId=${found[0].id} (code redacted from logs)`);
+      res.json(
+        exposeVerificationCode() ? { ...response, verificationCode } : response
+      );
+      return;
+    }
+    res.json(response);
+  } catch (error) {
+    console.error("Resend verification error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 // Verify token
 router.get("/verify", requireAuth, async (req: Request, res: Response) => {

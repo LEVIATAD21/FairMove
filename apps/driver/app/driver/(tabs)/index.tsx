@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Animated, ScrollView, StyleSheet, View } from "react-native";
+import { Alert, Animated, ScrollView, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
 import { AppText, Button, Card, MonogramWatermark, colors, radius, spacing } from "@fairmove/ui";
 import { formatBRL } from "../../../src/logic/ride-request";
@@ -73,7 +73,27 @@ export default function DriverHome() {
   const todayEarningsCents = todayRides.reduce((sum, ride) => sum + ride.driverCredit, 0);
   const profilePercent = completionPercent(me?.profile ?? null);
   const vehicleRegistered = Boolean(me?.driver?.vehicleId);
+  const approvalStatus = (me?.driver?.approvalStatus as string | undefined) ?? null;
+  const approved = !approvalStatus || approvalStatus === "approved";
   const firstName = (user?.name ?? me?.user.name ?? "").split(" ")[0] || "motorista";
+
+  // CORREÇÃO 1: PENDING/REJECTED/SUSPENDED não ficam online — nem por UI.
+  const onToggleOnline = () => {
+    if (!online && !approved) {
+      Alert.alert(
+        "Cadastro em análise",
+        approvalStatus === "rejected"
+          ? "Documentação rejeitada. Reenvie os documentos para continuar."
+          : "Seus documentos estão em análise. A liberação é feita manualmente pela plataforma.",
+        [
+          { text: "Ver cadastro", onPress: () => router.push("/driver/documents") },
+          { text: "Fechar", style: "cancel" },
+        ]
+      );
+      return;
+    }
+    void setOnline(!online);
+  };
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.container}>
@@ -113,10 +133,17 @@ export default function DriverHome() {
               Localização negada — position real necessária para ficar online.
             </AppText>
           ) : null}
+          {!approved && !online ? (
+            <AppText variant="caption" color={colors.gold.DEFAULT}>
+              {approvalStatus === "rejected"
+                ? "Documentação rejeitada — reenvie os documentos."
+                : "Aguardando aprovação da plataforma — corridas bloqueadas."}
+            </AppText>
+          ) : null}
           <Button
             title={online ? "FICAR OFFLINE" : "FICAR ONLINE"}
             variant={online ? "secondary" : "primary"}
-            onPress={() => void setOnline(!online)}
+            onPress={onToggleOnline}
             style={styles.statusBtn}
             accessibilityLabel={online ? "Ficar offline" : "Ficar online"}
           />
@@ -149,15 +176,29 @@ export default function DriverHome() {
           {loaded ? `Perfil ${profilePercent}% completo` : "Carregando perfil..."}
         </AppText>
         <AppText variant="caption">
-          {vehicleRegistered
-            ? "Documentação em dia — você pode operar normalmente."
-            : "Envie CNH e documento do veículo para liberar 100% das corridas."}
+          {!vehicleRegistered
+            ? "Envie CNH e documento do veículo para liberar 100% das corridas."
+            : approvalStatus === "approved"
+              ? "Documentação aprovada — você pode operar normalmente."
+              : approvalStatus === "pending"
+                ? "Documentos em análise pela plataforma."
+                : approvalStatus === "rejected"
+                  ? "Documentação rejeitada — reenvie os documentos."
+                  : "Conta suspensa — fale com o suporte."}
         </AppText>
+        {vehicleRegistered && approvalStatus !== "approved" ? (
+          <Button
+            title="VER CADASTRO"
+            variant="ghost"
+            onPress={() => router.push("/driver/documents")}
+            style={styles.statusBtn}
+          />
+        ) : null}
         {!vehicleRegistered ? (
           <Button
             title="COMPLETAR CADASTRO"
             variant="ghost"
-            onPress={() => router.push("/driver/profile")}
+            onPress={() => router.push("/driver/documents")}
             style={styles.statusBtn}
           />
         ) : null}
