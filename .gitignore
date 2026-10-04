@@ -36,3 +36,6 @@ Windows/
 
 # pnpm
 .pnpm-store/
+
+# Expo (artefatos do Metro/Expo Go)
+.expo/
