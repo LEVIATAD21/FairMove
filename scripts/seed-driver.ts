@@ -188,6 +188,13 @@ async function ensureVehicle(driverRowId: string): Promise<{ created: boolean }>
 }
 
 async function main(): Promise<void> {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Operational test seeding is forbidden when NODE_ENV=production.");
+  }
+  if (process.env.FAIRMOVE_ENABLE_TEST_SEED !== "true") {
+    throw new Error("Set FAIRMOVE_ENABLE_TEST_SEED=true explicitly for a non-production E2E database.");
+  }
+
   const dbUrl = (process.env.DATABASE_URL ?? "").replace(/\/\/[^@]*@/, "//***@");
   console.log("[seed-driver] conectando ao Postgres real (%s)", dbUrl || "DATABASE_URL não encontrada");
 
