@@ -7,6 +7,14 @@ import {
 } from "../../wallets/src/engine/wallet-engine";
 import { paymentProvider } from "./index";
 
+/** Indicates production tried to fall back to a mock PSP instead of charging real money. */
+export class PaymentProviderNotConfiguredError extends Error {
+  constructor() {
+    super("A real payment provider is not configured for production.");
+    this.name = "PaymentProviderNotConfiguredError";
+  }
+}
+
 export interface RideSettlementInput {
   rideId: string;
   /** userId do passageiro (pagador). */
@@ -153,6 +161,12 @@ export async function settleRidePayment(
       return readSettledResult(input, existing[0].id, existing[0].metadata ?? null);
     }
     if (error instanceof InsufficientFundsError) {
+      // Never run the in-memory provider in production. This is a direct
+      // settlement path, independent of the /payments router middleware.
+      if (process.env.NODE_ENV === "production") {
+        throw new PaymentProviderNotConfiguredError();
+      }
+
       // 2) Sem saldo: cobra no cartão (provedor)
       const authorized = await paymentProvider.authorize(input.fareCents / 100, "BRL", {
         rideId: input.rideId,
