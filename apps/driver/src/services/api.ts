@@ -130,7 +130,10 @@ function refreshAccessToken(): Promise<string | null> {
 
 async function doRefresh(): Promise<string | null> {
   const tokens = getSessionTokens();
-  if (!tokens?.refreshToken) return null;
+  if (!tokens?.refreshToken) {
+    await clearSession();
+    return null;
+  }
   try {
     const result = await request<{ token: string; refreshToken: string }>(
       "/auth/refresh",
@@ -144,11 +147,14 @@ async function doRefresh(): Promise<string | null> {
       await saveSession({ accessToken: result.token, refreshToken: result.refreshToken }, user);
     }
     return result.token;
-  } catch {
-    // Refresh inválido/revogado: derruba a sessão de verdade.
-    await clearSession();
-    emitSessionLost();
-    return null;
+  } catch (error) {
+    // Apenas erro explícito de credencial invalida a sessão.
+    // Rede indisponível, rate limit ou 5xx não significam token revogado.
+    if (error instanceof ApiError && [400, 401, 403].includes(error.status)) {
+      await clearSession();
+      return null;
+    }
+    throw error;
   }
 }
 
