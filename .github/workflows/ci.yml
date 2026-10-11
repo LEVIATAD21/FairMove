@@ -19,7 +19,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:15.19-alpine
+        image: postgis/postgis:15-3.5-alpine
         env:
           POSTGRES_USER: fairmove
           POSTGRES_PASSWORD: fairmove_password
@@ -51,7 +51,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11.13.0
+          version: 11.13.1
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -61,6 +61,9 @@ jobs:
 
       - name: Run typecheck
         run: pnpm typecheck
+
+      - name: Enable PostGIS extension
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS postgis;'
 
       - name: Apply database schema
         run: pnpm db:push
