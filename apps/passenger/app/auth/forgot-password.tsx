@@ -41,8 +41,17 @@ export default function ForgotPassword() {
   };
 
   const resetPassword = async () => {
-    if (!token.trim() || password.length < 8) {
-      setError("Cole o token recebido por e-mail e informe uma senha com pelo menos 8 caracteres.");
+    if (!/^[a-f0-9]{64}$/i.test(token.trim())) {
+      setError("O token deve ter 64 caracteres hexadecimais. Solicite outro se ele estiver expirado ou incompleto.");
+      return;
+    }
+    if (
+      password.length < 8 ||
+      password.length > 72 ||
+      !/[A-Za-z]/.test(password) ||
+      !/[0-9]/.test(password)
+    ) {
+      setError("Use uma senha de 8 a 72 caracteres, com pelo menos uma letra e um número.");
       return;
     }
     setBusy(true);
