@@ -228,7 +228,7 @@ export default function PassengerWallet() {
                 O CPF é enviado ao Mercado Pago para identificar o pagamento e não é salvo neste registro de recarga.
               </AppText>
               <Button
-                title={depositBusy ? "CRIANDO PIX..." : idempotencyKey ? "TENTAR NOVAMENTE" : "GERAR QR PIX"
+                title={depositBusy ? "CRIANDO PIX..." : idempotencyKey ? "TENTAR NOVAMENTE" : "GERAR QR PIX"}
                 onPress={() => void onCreatePix()}
                 disabled={depositBusy}
               />
