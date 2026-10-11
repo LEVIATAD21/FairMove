@@ -17,7 +17,7 @@ const describeIfDb = hasDb ? describe : describe.skip;
 
 import express from "express";
 import request from "supertest";
-import { createHash, randomUUID } from "crypto";
+import { createHash, randomBytes, randomUUID } from "crypto";
 import { sign } from "jsonwebtoken";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -426,6 +426,49 @@ describeIfDb("security: HTTP routes", () => {
         .where(eq(verificationTokens.userId, user.id));
       expect(rows).toHaveLength(1);
       expect(rows[0].token).toMatch(/^[a-f0-9]{64}$/);
+    });
+
+    it("reset-password token is single-use under concurrent requests", async () => {
+      const user = await actor("passenger");
+      const rawToken = randomBytes(32).toString("hex");
+      await db.insert(verificationTokens).values({
+        id: randomUUID(),
+        userId: user.id,
+        token: sha256(rawToken),
+        expiresAt: new Date(Date.now() + 60 * 1000),
+      });
+
+      const [first, second] = await Promise.all([
+        request(app).post("/api/auth/reset-password").send({
+          token: rawToken.toUpperCase(),
+          password: "StrongerPass123",
+        }),
+        request(app).post("/api/auth/reset-password").send({
+          token: rawToken,
+          password: "OtherSecurePass456",
+        }),
+      ]);
+
+      expect([first.status, second.status].sort((a, b) => a - b)).toEqual([200, 400]);
+
+      const storedUsers = await db
+        .select({ passwordHash: users.passwordHash })
+        .from(users)
+        .where(eq(users.id, user.id));
+      expect(storedUsers).toHaveLength(1);
+      expect(storedUsers[0].passwordHash).not.toBe("x");
+
+      const remainingTokens = await db
+        .select({ id: verificationTokens.id })
+        .from(verificationTokens)
+        .where(eq(verificationTokens.userId, user.id));
+      expect(remainingTokens).toHaveLength(0);
+
+      const remainingSessions = await db
+        .select({ id: sessions.id })
+        .from(sessions)
+        .where(eq(sessions.userId, user.id));
+      expect(remainingSessions).toHaveLength(0);
     });
   });
 
