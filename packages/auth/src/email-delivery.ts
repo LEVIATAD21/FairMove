@@ -37,6 +37,8 @@ async function sendTransactionalEmail(input: {
   if (!apiKey || !from) throw new EmailDeliveryNotConfiguredError();
 
   let response: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
     response = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -45,9 +47,14 @@ async function sendTransactionalEmail(input: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ from, to: [input.to], subject: input.subject, text: input.text, html: input.html }),
+      // TypeScript's Expo DOM declarations conflict with Node 22's fetch
+      // AbortSignal declaration; this is a native Node AbortSignal at runtime.
+      signal: controller.signal as unknown as RequestInit["signal"],
     });
   } catch {
     throw new EmailDeliveryError();
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (!response.ok) {
