@@ -15,7 +15,7 @@ export interface SubscriptionResult {
   message: string;
   status?: string;
   newReserveBalance?: number;
-  /** Faixa de cobrança aplicada (trial/standard/full/optOut) — útil para logs e UI. */
+  /** Faixa de cobrança aplicada (trial/standard) — útil para logs e UI. */
   tier?: string;
   /** Mensalidade cobrada no ciclo (centavos). */
   amountChargedCents?: number;
@@ -108,11 +108,7 @@ export class SubscriptionEngine {
     };
   }
 
-  /**
-   * Opt-out da Reserva de Disciplina — IRREVERSÍVEL por regra de negócio.
-   * Marca `optedOutOfReserve=true`; `calculateMonthlyFee` já lê o campo e
-   * passa a cobrar o fixo integral da plataforma (sem aportes na reserva).
-   */
+  /** Endpoint legado: recusa desligar a contribuição fixa da reserva. */
   async optOutOfReserve(userId: string): Promise<SubscriptionResult> {
     const existing = await this.getSubscription(userId);
     if (!existing) {
@@ -211,17 +207,6 @@ export class SubscriptionEngine {
    * ledger é explicitamente idempotente para que retries e concorrência não
    * cobrem duas vezes a mesma competência.
    */
-  async chargeMonthlyFee(userId: string): Promise<SubscriptionResult> {  /**
-   * Cobra a mensalidade progressiva:
-   * - Mês 1: R$ 0,00 (trial) — apenas estende o período.
-   * - Mês 2: R$ 100,00 (R$ 51,00 plataforma + R$ 49,00 reserva).
-   * - Mês 3+: R$ 200,00 (R$ 130,00 plataforma + R$ 70,00 reserva).
-   * - Opt-out da reserva: R$ 150,00 fixos, 100% plataforma.
-   * - Cupons FairMove League descontam SOMENTE da fatia da plataforma.
-   *
-   * Idempotente por período de cobrança; se o saldo do motorista não cobre a
-   * mensalidade, a assinatura vai para `past_due` e nada é cobrado.
-   */
   async chargeMonthlyFee(userId: string): Promise<SubscriptionResult> {
     const sub = await this.getSubscription(userId);
     if (!sub || sub.status !== "active") {
@@ -251,7 +236,7 @@ export class SubscriptionEngine {
       const result = await db.transaction(async (tx: Transaction) => {
         let reserveBalance: number | undefined;
 
-        // Débita a taxa total progressiva da carteira do motorista
+        // Debita a mensalidade fixa da carteira do motorista
         await walletEngine.debitCents(
           userId,
           fee.totalFee,
@@ -263,7 +248,7 @@ export class SubscriptionEngine {
           tx
         );
 
-        // Parcela da plataforma (já líquida de cupom, quando houver)
+        // Parcela fixa da plataforma
         if (fee.platformShare > 0) {
           await walletEngine.creditCents(
             platformUserId,
@@ -277,7 +262,7 @@ export class SubscriptionEngine {
           );
         }
 
-        // Parcela da reserva — NUNCA reduzida por cupom; só existe sem opt-out
+        // Parcela fixa e obrigatória da reserva
         if (fee.reserveShare > 0) {
           const reserveMove = await walletEngine.creditReserveCents(
             userId,
