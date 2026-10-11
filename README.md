@@ -64,6 +64,12 @@ The product identity is premium black and metallic gold, with high-contrast acce
 
 Pull requests and pushes to `main` and `develop` run lint, type checking, database schema application, tests, TypeScript build, and a Docker image build. The CI workflow builds the image without publishing it. Release publishing must be configured as a separate, explicitly authorized workflow.
 
+## Android build configuration
+
+Passenger and driver apps each have an `eas.json` with development, internal-preview APK, and production Android App Bundle profiles. Before a production EAS build, configure `EXPO_PUBLIC_API_URL` as the HTTPS origin of the deployed API in the EAS production environment. The dynamic app config rejects a production build if that URL is missing or not HTTPS; the app API clients also refuse to silently target localhost in release builds.
+
+EAS project linking, Android signing, the deployed API domain, provider credentials, and Google Play Console setup must be completed in the owner's accounts. Those account-bound steps cannot be fabricated in source control.
+
 ## Release readiness
 
 A green CI run alone does not establish Play Store readiness. Before release, validate real provider integrations, production secrets, database migrations/backups, observability and incident response, Android release signing, app privacy disclosures, Data safety declarations, permissions, and end-to-end passenger/driver flows on physical devices. Do not represent mock payment providers or local-only infrastructure as production integrations.
