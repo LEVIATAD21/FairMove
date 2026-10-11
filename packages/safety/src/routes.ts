@@ -31,6 +31,16 @@ async function denyUnlessParticipant(
 // SOS - registra alerta crítico de segurança (sempre no contexto do usuário autenticado)
 router.post("/sos", requireAuth, validateBody(SosSchema), async (req: Request, res: Response) => {
   try {
+    // Safety fail-closed: the repository has no verified emergency dispatch provider.
+    // Never tell a passenger or driver that help was dispatched when only a DB row
+    // can be written. Configure and verify a real dispatch integration before enabling.
+    if (process.env.NODE_ENV === "production") {
+      return res.status(503).json({
+        error: "sos_dispatch_not_configured",
+        message: "O SOS ainda não está conectado a uma central de atendimento e não acionará ajuda externa.",
+      });
+    }
+
     const { rideId } = req.body as { rideId: string };
     const user = req.user!;
 
@@ -47,7 +57,11 @@ router.post("/sos", requireAuth, validateBody(SosSchema), async (req: Request, r
       reportedBy: user.id,
     });
 
-    return res.status(201).json({ message: "SOS alert triggered", eventId });
+    return res.status(201).json({
+      message: "SOS registrado no ambiente de desenvolvimento; nenhuma equipe externa foi notificada.",
+      eventId,
+      dispatchStatus: "not_configured",
+    });
   } catch (error) {
     console.error("SOS error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
     return res.status(500).json({ error: "Internal server error" });
