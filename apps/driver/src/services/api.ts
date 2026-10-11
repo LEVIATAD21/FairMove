@@ -22,10 +22,14 @@ const configuredBaseUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
 
 // Never ship a release that silently points at localhost. Production must use
 // the HTTPS origin of the deployed FairMove API, supplied by the build environment.
-if (!__DEV__ && !configuredBaseUrl) {
+const isDevelopmentBuild = typeof __DEV__ === "undefined"
+  ? process.env.NODE_ENV !== "production"
+  : __DEV__;
+
+if (!isDevelopmentBuild && !configuredBaseUrl) {
   throw new Error("EXPO_PUBLIC_API_URL must be configured for production builds.");
 }
-if (!__DEV__ && configuredBaseUrl && !configuredBaseUrl.startsWith("https://")) {
+if (!isDevelopmentBuild && configuredBaseUrl && !configuredBaseUrl.startsWith("https://")) {
   throw new Error("EXPO_PUBLIC_API_URL must use HTTPS in production.");
 }
 
