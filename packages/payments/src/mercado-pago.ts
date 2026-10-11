@@ -124,9 +124,9 @@ async function providerRequest(url: string, init: RequestInit): Promise<unknown>
         Authorization: `Bearer ${accessToken}`,
         Accept: "application/json",
         "Content-Type": "application/json",
-        ...(init.headers ?? {}),
+        ...((init.headers as Record<string, string> | undefined) ?? {}),
       },
-      signal: controller.signal,
+      signal: controller.signal as unknown as RequestInit["signal"],
     });
     if (!response.ok) throw new MercadoPagoRequestError();
     try {
@@ -140,6 +140,24 @@ async function providerRequest(url: string, init: RequestInit): Promise<unknown>
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function normalizeCpf(value: string): string {
+  const digits = value.replace(/\D/g, "");
+  if (digits.length !== 11 || /^(\d)\1{10}$/.test(digits)) {
+    throw new TypeError("A valid Brazilian CPF is required.");
+  }
+  const calculate = (slice: string, weightStart: number) => {
+    const sum = [...slice].reduce((total, digit, index) => total + Number(digit) * (weightStart - index), 0);
+    const remainder = (sum * 10) % 11;
+    return remainder === 10 ? 0 : remainder;
+  };
+  const first = calculate(digits.slice(0, 9), 10);
+  const second = calculate(digits.slice(0, 10), 11);
+  if (first !== Number(digits[9]) || second !== Number(digits[10])) {
+    throw new TypeError("A valid Brazilian CPF is required.");
+  }
+  return digits;
 }
 
 function idempotencyDigest(userId: string, clientKey: string): string {
@@ -166,10 +184,11 @@ function presentDeposit(deposit: typeof walletDeposits.$inferSelect): PixDeposit
 export async function createPixDeposit(input: {
   userId: string;
   payerEmail: string;
+  payerCpf: string;
   amountCents: number;
   idempotencyKey: string;
 }): Promise<PixDepositResponse> {
-  const { accessToken, webhookUrl } = requireMercadoPagoConfig();
+  const { webhookUrl } = requireMercadoPagoConfig();
   if (!Number.isSafeInteger(input.amountCents) || input.amountCents < 500 || input.amountCents > 500_000) {
     throw new RangeError("Pix deposits must be between R$ 5.00 and R$ 5,000.00.");
   }
@@ -179,9 +198,10 @@ export async function createPixDeposit(input: {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.payerEmail)) {
     throw new TypeError("A valid payer email is required.");
   }
+  const payerCpf = normalizeCpf(input.payerCpf);
 
   const key = idempotencyDigest(input.userId, input.idempotencyKey);
-  let inserted = await db.insert(walletDeposits).values({
+  const inserted = await db.insert(walletDeposits).values({
     id: randomUUID(),
     userId: input.userId,
     amountCents: input.amountCents,
@@ -209,7 +229,10 @@ export async function createPixDeposit(input: {
     transaction_amount: Number((deposit.amountCents / 100).toFixed(2)),
     description: "Recarga de carteira FairMove via Pix",
     payment_method_id: "pix",
-    payer: { email: input.payerEmail.trim().toLowerCase() },
+    payer: {
+      email: input.payerEmail.trim().toLowerCase(),
+      identification: { type: "CPF", number: payerCpf },
+    },
     external_reference: `fairmove-deposit:${deposit.id}`,
     notification_url: webhookUrl,
     metadata: {
