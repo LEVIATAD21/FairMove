@@ -64,6 +64,13 @@
       "when": 1791025666755,
       "tag": "0008_volatile_captain_midlands",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791728100000,
+      "tag": "0009_pix_wallet_deposits",
+      "breakpoints": true
     }
   ]
 }
