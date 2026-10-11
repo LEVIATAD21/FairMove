@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, onSessionLost } from "../services/api";
+import { ApiError, api, onSessionLost } from "../services/api";
 import { clearSession, getSessionUser, loadSession, type SessionUser } from "../services/session";
 
 export type AuthStatus = "restoring" | "authed" | "guest";
@@ -62,12 +62,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
         setUser(me.user);
         setStatus("authed");
-      } catch {
-        // Token irreparável (ou backend fora): sessão limpa em api.ts.
-        await clearSession();
+      } catch (error) {
+        // Só credencial rejeitada encerra a sessão. Falha de rede/servidor
+        // não pode desconectar o usuário de forma permanente no boot.
+        const invalidSession = error instanceof ApiError && error.status === 401;
+        if (invalidSession) await clearSession();
         if (!cancelled) {
-          setUser(null);
-          setStatus("guest");
+          setUser(invalidSession ? null : restored);
+          setStatus(invalidSession ? "guest" : "authed");
         }
       }
     })();

@@ -1,8 +1,9 @@
 /**
- * Seed de contas OPERACIONAIS para o E2E da corrida (PASSO 4).
+ * Seed de FIXTURES SINTÉTICAS para E2E local (nunca para dados operacionais).
  *
- * - Escreve APENAS no Postgres real (banco configurado em .env).
- * - Idempotente: pode ser executado quantas vezes for preciso.
+ * - Escreve no Postgres configurado; o guard exige ambiente development/test
+ *   e host local ou serviço Docker Compose chamado "postgres".
+ * - Idempotente: pode ser executado quantas vezes for preciso em banco descartável.
  * - Cria:
  *   1. motorista joao.silva@fairmove.com.br (role "driver"),
  *      profile com telefone, linha em drivers (online/available),
@@ -188,7 +189,26 @@ async function ensureVehicle(driverRowId: string): Promise<{ created: boolean }>
 }
 
 async function main(): Promise<void> {
-  const dbUrl = (process.env.DATABASE_URL ?? "").replace(/\/\/[^@]*@/, "//***@");
+  if (process.env.NODE_ENV !== "development" && process.env.NODE_ENV !== "test") {
+    throw new Error("Test seeding requires NODE_ENV=development or NODE_ENV=test.");
+  }
+  if (process.env.FAIRMOVE_ENABLE_TEST_SEED !== "true") {
+    throw new Error("Set FAIRMOVE_ENABLE_TEST_SEED=true explicitly for a non-production E2E database.");
+  }
+
+  const rawDatabaseUrl = process.env.DATABASE_URL;
+  if (!rawDatabaseUrl) throw new Error("DATABASE_URL is required for E2E seeding.");
+  let databaseHost: string;
+  try {
+    databaseHost = new URL(rawDatabaseUrl).hostname.toLowerCase();
+  } catch {
+    throw new Error("DATABASE_URL must be a valid PostgreSQL URL for E2E seeding.");
+  }
+  if (!["localhost", "127.0.0.1", "::1", "[::1]", "postgres"].includes(databaseHost)) {
+    throw new Error("E2E seeding is restricted to localhost or the local Docker Compose postgres service.");
+  }
+
+  const dbUrl = rawDatabaseUrl.replace(/\/\/[^@]*@/, "//***@");
   console.log("[seed-driver] conectando ao Postgres real (%s)", dbUrl || "DATABASE_URL não encontrada");
 
   const driver = await upsertAccount(DRIVER_ACCOUNT);
@@ -245,7 +265,7 @@ async function main(): Promise<void> {
   await ensureProfile(passenger.id, "+5511912345678");
   await walletEngine.ensureWallet(passenger.id);
 
-  console.log("[seed-driver] OK — contas reais prontas, nenhum dado de negócio inventado.");
+  console.log("[seed-driver] OK — fixtures sintéticas de E2E prontas; use apenas em banco não produtivo.");
 }
 
 main()

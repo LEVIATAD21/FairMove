@@ -42,37 +42,41 @@ FairMove/
 
 ### Prerequisites
 
-- Node.js 20+
-- pnpm 11.13.0+
+- Node.js 22.x (CI and Docker use Node 22)
+- pnpm 11.13.1+
 - Docker (for PostgreSQL and Redis)
 
 ### Setup
 
 1. Clone the repository
 2. Install dependencies: `pnpm install`
-3. Copy `.env.example` to `.env` and replace every placeholder with environment-specific values
-4. Start infrastructure: `docker compose up -d`
-5. Run migrations: `pnpm db:migrate` (or `pnpm db:push` for schema sync)
+3. Configure required variables in an untracked local `.env` file; never commit credentials
+4. Start only the local database and cache: `docker compose up -d postgres redis`
+5. Set `DATABASE_URL` to a host-reachable URL using `localhost:5432`, then run versioned migrations: `pnpm db:migrate`
 6. Build the backend: `pnpm build`
-7. Start the backend: `pnpm start`
+7. Start the host backend on the same port used by the apps: `NODE_ENV=development PORT=3000 pnpm start`
 8. Run tests: `pnpm test`
+
+This Quick Start runs the backend on the host. Do not start the Compose `backend` service in this mode; it is for container-network deployment, where `DATABASE_URL` must use the `postgres` service hostname. Apply versioned migrations before starting the containerized backend.
 
 ### Environment configuration
 
-Required variables (validated at boot): `DATABASE_URL` and `JWT_SECRET` (min 32 chars in production).
+Required variables include `DATABASE_URL`, `JWT_SECRET`, and a distinct `REFRESH_TOKEN_SECRET`; production secrets must be at least 64 characters and must come from a secret manager.
 
-The `.env.example` values are designed for Docker Compose: the backend container resolves PostgreSQL using the `postgres` service hostname and listens on port `3000`. Keep `POSTGRES_PASSWORD` and the password segment of `DATABASE_URL` identical.
+Docker Compose requires `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `DATABASE_URL`, `JWT_SECRET`, a distinct `REFRESH_TOKEN_SECRET`, and an explicit `CORS_ORIGIN`. The containerized backend resolves PostgreSQL using the `postgres` service hostname and listens on port `3000`; the host-run backend uses `localhost` in `DATABASE_URL`. Keep `POSTGRES_PASSWORD` and the password segment of `DATABASE_URL` identical. Production requires an explicit HTTPS CORS origin; only local development may use `http://localhost:3000`. There is no committed production `.env`; keep local credentials untracked.
 
 When running the backend directly on the host instead of through Docker Compose, override only the database hostname in `DATABASE_URL` from `postgres` to `localhost`.
 
 `REDIS_URL` is optional: without it the realtime layer runs as a no-op.
+
+Production authentication mail uses the Resend HTTPS adapter. Set `RESEND_API_KEY` and `EMAIL_FROM` in the deployment secret manager only after verifying the sender/domain in Resend. Never commit these values. Production registration requires email verification; registration, verification resend, and password-recovery flows return HTTP 503 if delivery is unconfigured or rejected by the provider.
 
 ### Primeiro Acesso em Produção
 
 Em produção as credenciais vêm **apenas** de variáveis de ambiente seguras
 (secret manager / cofre) — nada de senhas em código, repo ou logs.
 
-1. Configure o `.env` (copie de `.env.example`) e gere os segredos:
+1. Configure os segredos diretamente no secret manager de produção. Para desenvolvimento local, use um `.env` não versionado. Gere os segredos:
    ```bash
    openssl rand -base64 48  # JWT_SECRET
    openssl rand -base64 48  # REFRESH_TOKEN_SECRET (deve ser DIFERENTE do anterior)
@@ -81,23 +85,11 @@ Em produção as credenciais vêm **apenas** de variáveis de ambiente seguras
    ```bash
    pnpm db:migrate
    ```
-3. Crie a primeira conta admin via API:
-   ```bash
-   curl -X POST http://localhost:3000/api/v1/auth/register \
-     -H 'Content-Type: application/json' \
-     -d '{
-       "name": "Admin FairMove",
-       "email": "admin@fairmove.com.br",
-       "password": "SUA_SENHA_FORTE_AQUI"
-     }'
-   ```
-4. Promova o usuário para admin (update direto em `users.role` ou rota admin).
-5. **Remova** `INITIAL_ADMIN_EMAIL`/`INITIAL_ADMIN_PASSWORD` do `.env` após
-   criar a conta (existem só para provisionar o primeiro acesso).
+3. Provisione a primeira conta administrativa somente por um procedimento operacional privado, revisado e auditado, executado por operador autorizado com acesso restrito ao banco. Esse procedimento deve criar a identidade, definir o papel e registrar auditoria; não existe bootstrap administrativo por rota pública e esse passo não deve ser automatizado pelo app.
+4. Confirme a identidade do operador, habilite MFA no provedor operacional e valide o acesso administrativo fora dos apps públicos.
+5. Nunca configure `INITIAL_ADMIN_EMAIL`/`INITIAL_ADMIN_PASSWORD` em produção nem mantenha credenciais iniciais persistentes.
 
-Contas operacionais de E2E (`pnpm db:seed-driver`) usam senhas de
-`.env` (gitignored) — gere com `openssl rand -base64 16` e guarde no
-cofre da equipe; elas nunca são committadas.
+Contas E2E só podem ser criadas em bancos não produtivos com `FAIRMOVE_ENABLE_TEST_SEED=true`; o script recusa `NODE_ENV=production`.
 
 ### Available Scripts
 
@@ -108,11 +100,11 @@ cofre da equipe; elas nunca são committadas.
 - `pnpm start` - Run the built backend (`dist/backend/src/index.js`)
 - `pnpm db:generate` - Generate a SQL migration from the Drizzle schema
 - `pnpm db:migrate` - Apply pending migrations
-- `pnpm db:push` - Push the schema directly to the database
+- `pnpm db:push` - Disposable local database only; do not use as the migration process for shared, staging, or production databases
 - `pnpm db:studio` - Open Drizzle Studio
 - `pnpm docker:up` - Start Docker infrastructure
 - `pnpm docker:down` - Stop Docker infrastructure
-- `pnpm db:seed-driver` - Seed idempotente de driver/admin reais (PASSO 4)
+- `NODE_ENV=development FAIRMOVE_ENABLE_TEST_SEED=true pnpm db:seed-driver` - fixtures sintéticas em banco local; exige NODE_ENV development/test, flag explícita e host local/Docker Compose
 - `pnpm e2e:ride` - E2E REST da corrida completa (Postgres real)
 - `pnpm demo:e2e` - Demo E2E tempo real: WebSocket +10 critérios &lt;1s
 
@@ -149,12 +141,11 @@ cofre da equipe; elas nunca são committadas.
 
 ## Security
 
-Hardening audit: all critical/high findings fixed, validated by automated
-tests (`tests/security/double-spend.test.ts`,
+Hardening audit and automated regression coverage include
+`tests/security/double-spend.test.ts`,
 `tests/security/race-conditions-and-idor.test.ts`,
-`tests/security/ws-handshake.test.ts`,
-`tests/security/subscription-trial.test.ts`) —
-147 tests green.
+`tests/security/ws-handshake.test.ts`, and
+`tests/security/subscription-trial.test.ts`. Verify the CI result for the exact commit being released; historical test counts are not a release guarantee.
 
 Red team mission (full attack + fix cycle): see
 [PENETRATION_TEST_REPORT.md](PENETRATION_TEST_REPORT.md),
@@ -173,8 +164,7 @@ coupon limits, input validation and WS handshake).
   missing, shorter than 32 chars (64 in production), identical to each other,
   or if `JWT_EXPIRES_IN` uses days in production. Generate with
   `openssl rand -base64 48`.
-- **Payments**: `POST /payments/*` requires JWT **and** `admin` role (was
-  open to the world), body validated with Zod.
+- **Payments**: `POST /payments/*` requires JWT **and** `admin` role, and validates bodies with Zod. The current provider is an in-memory mock; production requests are deliberately rejected with HTTP 503 until a real PSP is integrated.
 - **Ride state races**: a passenger can only hold one active ride (409);
   driver acceptance is an atomic claim (`available` driver row + ride row in
   one transaction) — two parallel accepts result in exactly one winner.
@@ -212,16 +202,14 @@ coupon limits, input validation and WS handshake).
 
 - Account enumeration is mitigated by rate limiting and a uniform
   "if an account exists" response, not fully eliminated.
-- Mock payment gateway remains (no real PSP integrated yet): endpoint
-  responses are simulated, but authorization rules and Zod validation are real.
-- Node 20 Docker image fails to build this monorepo (`ERR_UNKNOWN_BUILTIN_MODULE`);
-  local/staging runs on Node 22.
+- No real PSP is integrated yet. Mock payment endpoints are disabled in production with HTTP 503; card/PIX collection, verified webhooks, reconciliation, and settlement still block a real launch.
+- The release-readiness PR runs migrations, tests, production Android bundle exports, TypeScript compilation, and a Docker build; verify the latest GitHub Actions result before merging.
 
 ## Backend real + app mobile (staging local)
 
 ### 1. Infraestrutura (Postgres + Redis reais)
 ```bash
-cp .env.example .env          # preencha POSTGRES_PASSWORD, JWT_SECRET, REFRESH_TOKEN_SECRET
+# Configure um .env local não versionado com POSTGRES_PASSWORD, REDIS_PASSWORD, DATABASE_URL, JWT_SECRET e REFRESH_TOKEN_SECRET
 docker compose up -d postgres redis
 pnpm db:migrate               # aplica as migrações no Postgres real
 pnpm build && pnpm start      # backend em http://localhost:3000
@@ -236,11 +224,11 @@ ngrok http 3000                              # gera https://xxxx.ngrok-free.app
 ```
 Com a URL pública em mãos, atualize o app:
 ```bash
-cp apps/driver/.env.example apps/driver/.env
+# Defina EXPO_PUBLIC_API_URL no ambiente local não versionado:
 # EXPO_PUBLIC_API_URL=https://xxxx.ngrok-free.app/api/v1
 ```
-Sem ngrok, o celular na mesma rede Wi-Fi usa o IP da máquina:
-`EXPO_PUBLIC_API_URL=http://192.168.1.5:3000/api/v1` (veja com `hostname -I`).
+Sem ngrok, em desenvolvimento, o celular na mesma rede Wi-Fi usa o IP da máquina:
+`EXPO_PUBLIC_API_URL=http://192.168.1.5:3000/api/v1` (veja com `hostname -I`). Em produção, a URL deve ser HTTPS.
 
 ### 3. Rodar o app do motorista
 ```bash
@@ -257,15 +245,15 @@ curl -X POST http://localhost:3000/api/v1/auth/register \
   -d '{"name":"Nome","email":"contato@fairmove.com.br","password":"SUA_SENHA_FORTE_AQUI"}'
 ```
 
-### 5. Seed de motorista + E2E da corrida (PASSO 4)
+### 5. Fixtures sintéticas de motorista + E2E da corrida (somente desenvolvimento)
 ```bash
 pnpm build
-pnpm db:seed-driver      # idempotente: joao.silva@fairmove.com.br (driver, mês 1 trial)
+NODE_ENV=development FAIRMOVE_ENABLE_TEST_SEED=true pnpm db:seed-driver # fixtures sintéticas; apenas banco local de E2E
                          # + admin@fairmove.com.br para funding via API
                          # senhas em .env (gitignored) — ver "Primeiro Acesso"
 pnpm e2e:ride            # fluxo completo contra o Postgres real
 ```
-O E2E executa: login motorista → register passageiro → admin credita R$ 50
+O E2E local usa contas sintéticas: login motorista → register passageiro → admin de teste credita R$ 50
 (`POST /wallets/:id/credit`, ledger de dupla entrada) → cria corrida de
 R$ 14,62 (pricing real, 2,3 km) → aceita → `DRIVER_ARRIVING → … → IN_PROGRESS`
 → `complete` com liquidação em transação única (`paymentMethod: "wallet"`,
@@ -280,12 +268,12 @@ Nota: o engine de pricing pula de R$ 14,53 para R$ 14,62 num intervalo de
 
 ```bash
 pnpm build
-pnpm db:seed-driver
+FAIRMOVE_ENABLE_TEST_SEED=true pnpm db:seed-driver
 pnpm demo:e2e        # 10 critérios medidos, tudo <1s, outputs crus
 ```
 
-A demo conecta dois WebSockets reais (`/ws?token=` — JWT validado no
-handshake) e mede a latência ponta a ponta de cada etapa:
+A demo conecta dois WebSockets reais (`/ws`, JWT validado no handshake por
+`Sec-WebSocket-Protocol: fairmove.auth`) e mede a latência ponta a ponta:
 
 | Critério | Caminho | SLA |
 |---|---|---|
@@ -314,6 +302,12 @@ Garantias da FASE 3:
   real, quote do pricing antes de confirmar, acompanhamento da corrida
   por WS, histórico/saldo/extrato reais).
 
+### Play Store / EAS — requisitos de release
+
+Os apps de passageiro e motorista têm perfis EAS separados em `apps/passenger/eas.json` e `apps/driver/eas.json`: desenvolvimento, preview interno (APK) e produção (Android App Bundle). Para cada build de produção, configure `EXPO_PUBLIC_API_URL` no ambiente de build EAS como a origem HTTPS da API publicada. A configuração dinâmica rejeita builds de produção sem URL HTTPS, e os clientes móveis não podem cair silenciosamente em `localhost`.
+
+Ainda exigem configuração nas contas do proprietário: vincular os projetos EAS, configurar assinatura Android, implantar a API em domínio HTTPS real e cadastrar os segredos de produção no cofre de deploy. O adaptador de e-mail Resend está conectado, mas o e-mail de produção não estará ativo até configurar `RESEND_API_KEY` e um `EMAIL_FROM` verificado, e testar a entrega de ponta a ponta. A integração de um provedor de pagamento real (PIX/cartão, webhooks verificados, reconciliação, estornos e disputas) continua pendente; os endpoints financeiros permanecem bloqueados em produção para não simular movimentação de dinheiro. O SOS também precisa de despacho real verificado. O proprietário ainda deve preparar política de privacidade, Termos de Uso, declarações Data safety e justificativas de permissões da Google Play, testar em aparelhos Android físicos e com acessibilidade, e executar uma faixa de teste interno no Play Console. Exports do CI não são AABs assinados e nenhuma publicação foi disparada automaticamente.
+
 ### Endpoints principais (v1)
 | Método | Rota | Observação |
 |---|---|---|
@@ -330,5 +324,5 @@ Garantias da FASE 3:
 | POST | `/api/v1/matching/driver/location` | posição REST (o app usa WS) |
 | GET | `/api/v1/matching/drivers/nearby?lat&lng&radiusKm` | busca PostGIS |
 | POST | `/api/v1/pricing/quote` | orçamento real (persistido p/ auditoria) |
-| WS | `/ws?token=<accessToken>` | eventos push (ver FASE 3) |
-| POST | `/api/v1/subscriptions/:id/opt-out` | opt-out irreversível da reserva |
+| WS | `/ws` + `Sec-WebSocket-Protocol: fairmove.auth` | eventos push (ver FASE 3) |
+| POST | `/api/v1/subscriptions/:id/opt-out` | endpoint legado, retorna 410; a contribuição de R$ 41/mês é fixa |

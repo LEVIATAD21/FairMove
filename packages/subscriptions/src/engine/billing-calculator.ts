@@ -1,122 +1,62 @@
 /**
- * Motor de cálculo da mensalidade do motorista (Billing Engine).
+ * Cálculo determinístico e único da assinatura FairMove.
  *
- * Regras de negócio do FairMove — progressão por "meses ativos" contados a
- * partir da aprovação do cadastro:
+ * Regra comercial:
+ * - Primeiro mês: grátis (R$ 0,00).
+ * - Do segundo mês em diante: R$ 100,00 por mês.
+ * - Divisão fixa de cada mensalidade paga: R$ 59,00 plataforma + R$ 41,00
+ *   para a Reserva de Disciplina e Emergência.
  *
- * | Mês ativo | Taxa total | Plataforma | Reserva de Disciplina e Emergência |
- * |-----------|-----------:|-----------:|-----------------------------------:|
- * | 1 (trial) | R$ 0,00    | R$ 0,00    | R$ 0,00                            |
- * | 2         | R$ 100,00  | R$ 51,00   | R$ 49,00                           |
- * | 3+ (pleno)| R$ 200,00  | R$ 130,00  | R$ 70,00                           |
- *
- * Opt-out da reserva (a partir do mês 2): taxa fixa de R$ 150,00, integralmente
- * para a plataforma.
- *
- * TODOS os valores são centavos inteiros. Converta para reais apenas na camada
- * de apresentação (dividindo por 100).
+ * Flags antigas de opt-out/desconto são aceitas temporariamente por
+ * compatibilidade com registros e clientes antigos, mas NÃO alteram a taxa.
+ * Valores monetários são centavos inteiros em todas as camadas.
  */
 
-
-/** Teto máximo da mensalidade (R$ 200,00), nunca é excedido. */
-export const MONTHLY_FEE_CAP_CENTS = 20_000;
-/** Mensalidade fixa quando o motorista fez opt-out da reserva (R$ 150,00). */
-export const OPT_OUT_FEE_CENTS = 15_000;
+export const MONTHLY_FEE_CAP_CENTS = 10_000;
 
 export const SUBSCRIPTION_FEES = {
-  /** Mês 1 — trial/boas-vindas: motorista recebe 100% das corridas. */
   trial: { totalFee: 0, platformShare: 0, reserveShare: 0 },
-  /** Mês 2 — entrada no plano padrão (R$ 100,00). */
-  standard: { totalFee: 10_000, platformShare: 5_100, reserveShare: 4_900 },
-  /** Mês 3 em diante — plano pleno (R$ 200,00, teto). */
-  full: { totalFee: 20_000, platformShare: 13_000, reserveShare: 7_000 },
-  /** Mês 2+ com opt-out da reserva: R$ 150,00 fixos para a plataforma. */
-  optOut: { totalFee: 15_000, platformShare: 15_000, reserveShare: 0 },
+  standard: { totalFee: 10_000, platformShare: 5_900, reserveShare: 4_100 },
 } as const;
 
 export type BillingTier = keyof typeof SUBSCRIPTION_FEES;
 
 export interface SubscriptionBillingState {
-  /** Mês ativo (1-based) desde a aprovação do cadastro. */
+  /** Mês ativo (1-based) desde a ativação do cadastro. */
   monthsActive: number;
-  /** `true` quando o motorista saiu da Reserva de Disciplina e Emergência. */
-  optedOutOfReserve: boolean;
-  /**
-   * Percentual de desconto ativo de cupom FairMove League (0–100).
-   * Aplica-se EXCLUSIVAMENTE à fatia da plataforma — a parcela da Reserva de
-   * Disciplina e Emergência nunca é reduzida por cupons.
-   */
+  /** Campo legado: ignorado. A reserva é parte fixa e obrigatória do plano. */
+  optedOutOfReserve?: boolean;
+  /** Campo legado: ignorado. Cupons não alteram a mensalidade de assinatura fixa. */
   discountPercent?: number;
 }
 
 export interface MonthlyFeeBreakdown {
-  /** Taxa total do ciclo em centavos. */
   totalFee: number;
-  /** Parcela da plataforma (FairMove) em centavos. */
   platformShare: number;
-  /** Parcela da Reserva de Disciplina e Emergência em centavos (0 se opt-out). */
   reserveShare: number;
-  /** Faixa de cobrança aplicada (útil para logs e exibição no app). */
   tier: BillingTier;
 }
 
-/**
- * Normaliza a entrada para um mês ativo válido (inteiro, ≥ 1).
- * Entradas não finitas ou negativas caem no mês 1 (trial).
- */
+/** Entradas inválidas e negativas caem no primeiro mês grátis. */
 function normalizeMonthsActive(monthsActive: number): number {
   if (!Number.isFinite(monthsActive)) return 1;
   return Math.max(1, Math.floor(monthsActive));
 }
 
 /**
- * Calcula a mensalidade do próximo ciclo de um motorista.
- *
- * Pura e determinística: mesma entrada ⇒ mesma saída, sem acesso a banco ou
- * relógio — a base ideal para testes property-based.
- *
- * @example
- * calculateMonthlyFee({ monthsActive: 3, optedOutOfReserve: false });
- * // => { totalFee: 20000, platformShare: 13000, reserveShare: 7000, tier: "full" }
+ * Regra única de preço. Meses 2+ sempre retornam o mesmo valor e a mesma
+ * divisão, independentemente de flags legadas, cupons ou atraso do job.
  */
 export function calculateMonthlyFee(state: SubscriptionBillingState): MonthlyFeeBreakdown {
   const months = normalizeMonthsActive(state?.monthsActive);
-  const optedOut = state?.optedOutOfReserve === true;
-
-  let tier: BillingTier;
-  if (months <= 1) tier = "trial";
-  else if (optedOut) tier = "optOut";
-  else if (months === 2) tier = "standard";
-  else tier = "full";
-
-  const fee = SUBSCRIPTION_FEES[tier];
-
-  // Cupom FairMove League: desconto aplicado SOMENTE à fatia da plataforma.
-  // A reserva (reserveShare) intocável; totalFee é recalculado como soma real.
-  const discount = normalizeDiscount(state?.discountPercent);
-  if (discount === 0) {
-    return { ...fee, tier };
-  }
-  const platformShare = Math.max(0, Math.round(fee.platformShare * (1 - discount / 100)));
-  const reserveShare = fee.reserveShare;
-  return { totalFee: platformShare + reserveShare, platformShare, reserveShare, tier };
-}
-
-/** Normaliza o percentual de cupom para o intervalo fechado [0, 100]. */
-function normalizeDiscount(discountPercent: number | undefined): number {
-  if (discountPercent === undefined || !Number.isFinite(discountPercent)) return 0;
-  return Math.min(100, Math.max(0, discountPercent));
+  const tier: BillingTier = months <= 1 ? "trial" : "standard";
+  return { ...SUBSCRIPTION_FEES[tier], tier };
 }
 
 /**
- * Calcula o mês ativo atual a partir da data de aprovação do cadastro.
- *
- * Retorna `0` quando ainda não há aprovação (`null`/inválida); caso contrário
- * `1` durante o primeiro mês, `2` após completar um mês completo, etc.
- *
- * BUG-B: o cálculo usa getters UTC — a data de aprovação é um instante global
- * e o mês ativo NÃO pode mudar quando o servidor muda de fuso (getters locais
- * faziam `2026-09-01T00:00Z` virar `2026-08-31` em America/Sao_Paulo).
+ * Calcula o mês ativo a partir da data de ativação.
+ * Retorna 0 quando ainda não existe uma data válida ou ela está no futuro.
+ * UTC é usado para que o ciclo não dependa do fuso do servidor.
  */
 export function resolveMonthsActive(
   subscriptionStartedAt: Date | string | null | undefined,

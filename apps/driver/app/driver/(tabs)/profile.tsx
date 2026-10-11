@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Modal, ScrollView, StyleSheet, Switch, View } from "react-native";
+import { ScrollView, StyleSheet } from "react-native";
 import { useRouter } from "expo-router";
-import { AppText, Button, Card, MonogramWatermark, colors, radius, spacing } from "@fairmove/ui";
-import { formatBRL } from "../../../src/logic/ride-request";
+import { AppText, Button, Card, MonogramWatermark, colors, spacing } from "@fairmove/ui";
 import { cycleLabel, feeSplitLabel, monthlyFeeLabel } from "../../../src/logic/subscription";
 import { completionPercent } from "../../../src/logic/profile";
 import { api, type DriverMeResponse, type SubscriptionResponse } from "../../../src/services/api";
@@ -13,7 +12,7 @@ import { useAuth } from "../../../src/auth/AuthProvider";
  * - identidade da sessão (SecureStore) + profile do banco (integridade %);
  * - assinatura real (GET /subscriptions/:id): sem assinatura → estado vazio
  *   honesto, sem ciclo/split inventados;
- * - opt-out da Reserva → POST /subscriptions/:id/opt-out (irreversível);
+ * - plano fixo: primeiro mês grátis; depois R$ 100/mês (R$ 59 plataforma + R$ 41 reserva);
  * - logout real (POST /auth/logout + blacklist Redis no servidor).
  */
 export default function DriverProfile() {
@@ -21,7 +20,6 @@ export default function DriverProfile() {
   const { user, logout } = useAuth();
   const [me, setMe] = useState<DriverMeResponse | null>(null);
   const [subscription, setSubscription] = useState<SubscriptionResponse | null>(null);
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -40,36 +38,8 @@ export default function DriverProfile() {
 
   const activeSub =
     subscription && subscription.hasSubscription ? subscription.subscription : null;
-  const optedOut = activeSub?.optedOutOfReserve ?? false;
   const cycle = activeSub?.currentBillingCycle ?? 0;
   const profilePercent = completionPercent(me?.profile ?? null);
-
-  const handleToggle = (value: boolean) => {
-    if (value) {
-      setConfirmOpen(true);
-      return;
-    }
-    // Opt-out é irreversível por regra de negócio — não há "voltar".
-  };
-
-  const confirmOptOut = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await api.optOutReserve();
-      await refresh();
-      setConfirmOpen(false);
-    } catch (error) {
-      Alert.alert(
-        "Não foi possível sair",
-        error instanceof Error && error.message.includes("HTTP")
-          ? "O servidor recusou a operação. Tente novamente."
-          : "Verifique sua conexão e tente novamente."
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const onLogout = async () => {
     if (busy) return;
@@ -105,14 +75,10 @@ export default function DriverProfile() {
           <>
             <AppText variant="subtitle">{cycleLabel(cycle)}</AppText>
             <AppText variant="bodyStrong" style={styles.split}>
-              {feeSplitLabel(cycle, optedOut)}
+              {feeSplitLabel(cycle, false)}
             </AppText>
-            <AppText variant="caption">{monthlyFeeLabel(cycle, optedOut)}</AppText>
-            <AppText variant="caption">
-              {optedOut
-                ? "Opt-out ativo: taxa fixa integralmente para a plataforma, sem aportes na reserva."
-                : "A reserva é um direito seu — este valor continua protegido e nunca sai da conta."}
-            </AppText>
+            <AppText variant="caption">{monthlyFeeLabel(cycle, false)}</AppText>
+            <AppText variant="caption">R$ 41,00 da mensalidade são destinados à sua Reserva de Disciplina e Emergência.</AppText>
           </>
         ) : (
           <>
@@ -126,25 +92,16 @@ export default function DriverProfile() {
         )}
       </Card>
 
-      <Card>
-        <View style={styles.toggleRow}>
-          <View style={styles.toggleInfo}>
-            <AppText variant="bodyStrong">Sair do plano de reserva</AppText>
-            <AppText variant="caption">
-              {activeSub
-                ? `Deseja sair do plano de reserva e pagar ${formatBRL(15_000)} fixos?`
-                : "Disponível assim que sua assinatura estiver ativa."}
-            </AppText>
-          </View>
-          <Switch
-            value={optedOut}
-            disabled={!activeSub || optedOut}
-            onValueChange={handleToggle}
-            trackColor={{ false: colors.graphite.raised, true: colors.gold.dark }}
-            thumbColor={optedOut ? colors.gold.DEFAULT : colors.graphite.line}
-            accessibilityLabel="Sair do plano de reserva"
-          />
-        </View>
+      <Card variant="solid">
+        <AppText variant="caption" color={colors.gold.DEFAULT}>
+          PLANO TRANSPARENTE
+        </AppText>
+        <AppText variant="bodyStrong">
+          Primeiro mês grátis; depois R$ 100,00 por mês.
+        </AppText>
+        <AppText variant="body">
+          R$ 59,00 para a plataforma e R$ 41,00 para a Reserva de Disciplina e Emergência, sem comissão por corrida.
+        </AppText>
       </Card>
 
       <Card variant="solid">
@@ -162,38 +119,6 @@ export default function DriverProfile() {
         onPress={onLogout}
       />
 
-      <Modal
-        visible={confirmOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setConfirmOpen(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <AppText variant="title" color={colors.danger}>
-              Sair da Reserva de Disciplina?
-            </AppText>
-            <AppText variant="body">
-              Ao confirmar, a Reserva de Disciplina e Emergência será{" "}
-              <AppText variant="bodyStrong" color={colors.danger}>
-                congelada permanentemente
-              </AppText>
-              : o valor já acumulado fica retido até uma emergência validada ou o seu
-              desligamento, e nenhum novo aporte será feito.
-            </AppText>
-            <AppText variant="body">
-              Sua taxa mensal passa a ser fixa de {formatBRL(15_000)}, integralmente para a
-              plataforma — esta mudança é permanente e não pode ser desfeita.
-            </AppText>
-            <Button title="CONFIRMAR SAÍDA" variant="danger" onPress={confirmOptOut} />
-            <Button
-              title="MANTER NA RESERVA"
-              variant="secondary"
-              onPress={() => setConfirmOpen(false)}
-            />
-          </View>
-        </View>
-      </Modal>
     </ScrollView>
   );
 }
@@ -203,28 +128,4 @@ const styles = StyleSheet.create({
   container: { gap: spacing.lg, padding: spacing.xl, paddingBottom: spacing.xxxl },
   status: { marginTop: spacing.sm },
   split: { color: colors.gold.DEFAULT, marginTop: spacing.sm },
-  toggleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.lg,
-  },
-  toggleInfo: { flex: 1, gap: spacing.xs },
-  modalOverlay: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: spacing.xl,
-    backgroundColor: "rgba(5, 5, 5, 0.85)",
-  },
-  modalCard: {
-    width: "100%",
-    maxWidth: 420,
-    gap: spacing.lg,
-    padding: spacing.xl,
-    borderRadius: radius.lg,
-    borderWidth: 1.5,
-    borderColor: colors.danger,
-    backgroundColor: colors.graphite.deep,
-  },
 });

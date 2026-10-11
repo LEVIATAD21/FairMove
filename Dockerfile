@@ -1,20 +1,19 @@
 # ---- build ----
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
-RUN npm i -g pnpm@11.13.0
+RUN npm i -g pnpm@11.13.1
 
 WORKDIR /usr/src/app
 
 COPY . .
 
 RUN pnpm install --frozen-lockfile
-
 RUN pnpm build
 
 # ---- run ----
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
-RUN npm i -g pnpm@11.13.0
+RUN npm i -g pnpm@11.13.1
 
 WORKDIR /usr/src/app
 

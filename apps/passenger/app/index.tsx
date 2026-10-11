@@ -2,13 +2,15 @@ import { useEffect, useRef } from "react";
 import { Animated, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
 import { AppText, FVLogo, SLOGAN, BRAND, colors, spacing } from "@fairmove/ui";
+import { useAuth } from "../src/auth/AuthProvider";
 
 /**
- * Splash cinematográfica: monograma FV pulsando em glow dourado + slogan.
- * Após ~2s navega para o Auth (uma única vez — troca por replace).
+ * Splash cinematográfica: restaura a sessão antes de decidir a rota.
+ * Usuários autenticados seguem para o app; visitantes vão para o login.
  */
 export default function Splash() {
   const router = useRouter();
+  const { status } = useAuth();
   const pulse = useRef(new Animated.Value(0.35)).current;
 
   useEffect(() => {
@@ -20,13 +22,19 @@ export default function Splash() {
     );
     animation.start();
 
-    const timeout = setTimeout(() => router.replace("/auth/login"), 2000);
-
     return () => {
       animation.stop();
-      clearTimeout(timeout);
     };
-  }, [pulse, router]);
+  }, [pulse]);
+
+  useEffect(() => {
+    if (status === "restoring") return;
+    const timeout = setTimeout(
+      () => router.replace(status === "authed" ? "/passenger" : "/auth/login"),
+      1200
+    );
+    return () => clearTimeout(timeout);
+  }, [status, router]);
 
   return (
     <View style={styles.container}>

@@ -1,6 +1,8 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
-import { db, wallets, ledger_transactions, ledger_entries } from "@fairmove/shared-db";
-import { desc, eq } from "drizzle-orm";
+import { db, users, wallets, ledger_transactions, ledger_entries, walletDeposits } from "@fairmove/shared-db";
+import { and, desc, eq } from "drizzle-orm";
+import { z } from "zod";
+import { createPixDeposit, isMercadoPagoConfigured, MercadoPagoNotConfiguredError, MercadoPagoRequestError, processMercadoPagoPaymentWebhook, WalletDepositConflictError } from "../../payments/src/mercado-pago";
 import { requireAuth, requireRole, requireSelfOrRole } from "../../auth/src/middleware";
 import { validateBody, WalletOperationSchema, ReserveOperationSchema } from "@fairmove/validation";
 import {
@@ -12,6 +14,12 @@ import {
 } from "./engine/wallet-engine";
 
 const router = Router();
+
+const PixDepositSchema = z.object({
+  amount: z.number().min(5).max(5000).multipleOf(0.01),
+  idempotencyKey: z.string().regex(/^[A-Za-z0-9._:-]{16,128}$/),
+  payerCpf: z.string().min(11).max(14),
+});
 
 function handleError(res: Response, error: unknown): void {
   if (error instanceof InsufficientFundsError || error instanceof InsufficientReserveError) {
@@ -67,20 +75,126 @@ router.get("/me/balance", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
-// Depósito — NÃO simula pagamento: sem gateway real configurado, 501 com docs.
-router.post("/deposit", requireAuth, (_req: Request, res: Response) => {
-  res.status(501).json({
-    error: "payment_gateway_not_configured",
-    message:
-      "POST /api/v1/wallets/deposit exige um gateway de pagamento real (PIX via Pagar.me, Stripe ou similar). Enquanto não houver credenciais, o endpoint não credita saldo.",
-    docs: {
-      manual_credit:
-        "Crédito manual (backoffice): POST /api/v1/wallets/:userId/credit — requer role=admin, passa pelo ledger de dupla entrada e aceita idempotencyKey.",
-      required_env: ["PAGARME_API_KEY ou STRIPE_SECRET_KEY"],
-      no_fake_data: "Nenhum saldo é criado por este endpoint sem liquidação real.",
-    },
-  });
+function depositPayload(deposit: typeof walletDeposits.$inferSelect) {
+  return {
+    depositId: deposit.id,
+    amountCents: deposit.amountCents,
+    currency: "BRL",
+    status: deposit.status,
+    qrCode: deposit.qrCode,
+    qrCodeBase64: deposit.qrCodeBase64,
+    ticketUrl: deposit.ticketUrl,
+    expiresAt: deposit.expiresAt?.toISOString() ?? null,
+  };
+}
+
+// Recupera somente o último depósito pertencente à própria conta autenticada.
+router.get("/deposits/latest", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const rows = await db
+      .select()
+      .from(walletDeposits)
+      .where(eq(walletDeposits.userId, req.user!.id))
+      .orderBy(desc(walletDeposits.createdAt))
+      .limit(1);
+    return res.json(rows[0] ? depositPayload(rows[0]) : null);
+  } catch (error) {
+    handleError(res, error);
+  }
 });
+
+// Atualiza o status de um Pix consultando o PSP; nunca confia em estado vindo do app.
+router.post("/deposits/:depositId/refresh", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const depositId = String(req.params.depositId ?? "");
+    const rows = await db
+      .select()
+      .from(walletDeposits)
+      .where(and(eq(walletDeposits.id, depositId), eq(walletDeposits.userId, req.user!.id)))
+      .limit(1);
+    const current = rows[0];
+    if (!current) return res.status(404).json({ error: "deposit_not_found" });
+
+    if (current.status === "pending" && current.providerPaymentId) {
+      if (!isMercadoPagoConfigured()) {
+        return res.status(503).json({ error: "payment_gateway_not_configured" });
+      }
+      await processMercadoPagoPaymentWebhook(current.providerPaymentId);
+    }
+
+    const updated = await db
+      .select()
+      .from(walletDeposits)
+      .where(and(eq(walletDeposits.id, depositId), eq(walletDeposits.userId, req.user!.id)))
+      .limit(1);
+    return res.json(updated[0] ? depositPayload(updated[0]) : { error: "deposit_not_found" });
+  } catch (error) {
+    if (error instanceof MercadoPagoNotConfiguredError) {
+      return res.status(503).json({ error: "payment_gateway_not_configured" });
+    }
+    if (error instanceof MercadoPagoRequestError) {
+      return res.status(502).json({ error: "payment_provider_unavailable" });
+    }
+    handleError(res, error);
+  }
+});
+
+// Depósito real via Pix. A carteira só é creditada pelo webhook assinado do PSP.
+router.post(
+  "/deposit",
+  requireAuth,
+  validateBody(PixDepositSchema),
+  async (req: Request, res: Response) => {
+    try {
+      // Mesmo com o Pix de entrada implementado, não aceitamos dinheiro em
+      // produção até existir um saque/liquidação real e validada para motoristas.
+      // Isso evita acumular saldo de terceiros sem um caminho de pagamento.
+      if (process.env.NODE_ENV === "production") {
+        return res.status(503).json({
+          error: "driver_payouts_not_configured",
+          message: "Recargas ficam indisponíveis até o fluxo real de saque/liquidação para motoristas estar configurado e verificado.",
+        });
+      }
+
+      const userId = req.user!.id;
+      const accountRows = await db
+        .select({ email: users.email, emailVerifiedAt: users.emailVerifiedAt })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+      const account = accountRows[0];
+      if (!account) return res.status(401).json({ error: "invalid_session" });
+      if (process.env.NODE_ENV === "production" && !account.emailVerifiedAt) {
+        return res.status(403).json({ error: "email_verification_required" });
+      }
+
+      const { amount, idempotencyKey, payerCpf } = req.body as z.infer<typeof PixDepositSchema>;
+      const deposit = await createPixDeposit({
+        userId,
+        payerEmail: account.email,
+        payerCpf,
+        amountCents: Math.round(amount * 100),
+        idempotencyKey,
+      });
+      return res.status(200).json(deposit);
+    } catch (error) {
+      if (error instanceof MercadoPagoNotConfiguredError) {
+        return res.status(503).json({ error: "payment_gateway_not_configured" });
+      }
+      if (error instanceof WalletDepositConflictError) {
+        return res.status(409).json({ error: "idempotency_key_conflict" });
+      }
+      if (error instanceof RangeError || error instanceof TypeError) {
+        return res.status(400).json({ error: "invalid_deposit_request" });
+      }
+      if (error instanceof MercadoPagoRequestError) {
+        return res.status(502).json({ error: "payment_provider_unavailable" });
+      }
+      handleError(res, error);
+      return;
+    }
+  }
+);
 
 // Carteira de um usuário específico (próprio usuário ou admin)
 router.get("/:userId", requireAuth, requireSelfOrRole("userId", "admin"), async (req, res) => {

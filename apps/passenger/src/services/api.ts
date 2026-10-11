@@ -18,11 +18,23 @@ import {
  * Sem mocks: dado inexistente chega vazio do servidor — a UI mostra "sem dados".
  */
 
-const DEFAULT_BASE_URL = "http://localhost:3000/api/v1";
+const configuredBaseUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
 
-export const API_BASE_URL = (
-  process.env.EXPO_PUBLIC_API_URL || DEFAULT_BASE_URL
-).replace(/\/+$/, "");
+// Never ship a release that silently points at localhost. Production must use
+// the HTTPS origin of the deployed FairMove API, supplied by the build environment.
+const isDevelopmentBuild = typeof __DEV__ === "undefined"
+  ? process.env.NODE_ENV !== "production"
+  : __DEV__;
+
+if (!isDevelopmentBuild && !configuredBaseUrl) {
+  throw new Error("EXPO_PUBLIC_API_URL must be configured for production builds.");
+}
+if (!isDevelopmentBuild && configuredBaseUrl && !configuredBaseUrl.startsWith("https://")) {
+  throw new Error("EXPO_PUBLIC_API_URL must use HTTPS in production.");
+}
+
+const DEFAULT_BASE_URL = "http://localhost:3000/api/v1";
+export const API_BASE_URL = (configuredBaseUrl || DEFAULT_BASE_URL).replace(/\/+$/, "");
 
 export class ApiError extends Error {
   readonly status: number;
@@ -118,7 +130,10 @@ function refreshAccessToken(): Promise<string | null> {
 
 async function doRefresh(): Promise<string | null> {
   const tokens = getSessionTokens();
-  if (!tokens?.refreshToken) return null;
+  if (!tokens?.refreshToken) {
+    await clearSession();
+    return null;
+  }
   try {
     const result = await request<{ token: string; refreshToken: string }>(
       "/auth/refresh",
@@ -131,10 +146,14 @@ async function doRefresh(): Promise<string | null> {
       await saveSession({ accessToken: result.token, refreshToken: result.refreshToken }, user);
     }
     return result.token;
-  } catch {
-    await clearSession();
-    emitSessionLost();
-    return null;
+  } catch (error) {
+    // Apenas erro explícito de credencial invalida a sessão.
+    // Rede indisponível, rate limit ou 5xx não significam token revogado.
+    if (error instanceof ApiError && [400, 401, 403].includes(error.status)) {
+      await clearSession();
+      return null;
+    }
+    throw error;
   }
 }
 
@@ -164,6 +183,17 @@ export type LedgerTransaction = {
   description: string | null;
   status: string;
   created_at: string;
+};
+
+export type PixDepositResponse = {
+  depositId: string;
+  amountCents: number;
+  currency: "BRL";
+  status: string;
+  qrCode: string | null;
+  qrCodeBase64: string | null;
+  ticketUrl: string | null;
+  expiresAt: string | null;
 };
 
 export type RideHistoryItem = {
@@ -270,6 +300,22 @@ export const api = {
     });
   },
 
+  forgotPassword(email: string): Promise<{ message: string }> {
+    return request("/auth/forgot-password", {
+      method: "POST",
+      body: { email },
+      auth: false,
+    });
+  },
+
+  resetPassword(token: string, password: string): Promise<{ message: string }> {
+    return request("/auth/reset-password", {
+      method: "POST",
+      body: { token, password },
+      auth: false,
+    });
+  },
+
   async logout(): Promise<void> {
     try {
       await request<void>("/auth/logout", { method: "POST" });
@@ -284,6 +330,23 @@ export const api = {
 
   getBalance(): Promise<WalletBalance> {
     return request<WalletBalance>("/wallets/me/balance");
+  },
+
+  createPixDeposit(amount: number, idempotencyKey: string, payerCpf: string): Promise<PixDepositResponse> {
+    return request<PixDepositResponse>("/wallets/deposit", {
+      method: "POST",
+      body: { amount, idempotencyKey, payerCpf },
+    });
+  },
+
+  getLatestPixDeposit(): Promise<PixDepositResponse | null> {
+    return request<PixDepositResponse | null>("/wallets/deposits/latest");
+  },
+
+  refreshPixDeposit(depositId: string): Promise<PixDepositResponse> {
+    return request<PixDepositResponse>(`/wallets/deposits/${encodeURIComponent(depositId)}/refresh`, {
+      method: "POST",
+    });
   },
 
   async getTransactions(): Promise<LedgerTransaction[]> {

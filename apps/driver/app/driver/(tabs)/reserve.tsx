@@ -107,7 +107,7 @@ export default function DriverReserve() {
           ))
         )}
         <AppText variant="caption">
-          Aportes mensais conforme seu ciclo: R$ 49,00 no mês 2 e R$ 70,00 do mês 3 em diante.
+          Aporte de R$ 41,00 por mês a partir do fim do primeiro mês grátis.
         </AppText>
       </Card>
 
@@ -116,7 +116,7 @@ export default function DriverReserve() {
           COMO FUNCIONA
         </AppText>
         <AppText variant="body">• O dinheiro fica separado da sua carteira de saque.</AppText>
-        <AppText variant="body">• Rende conforme as regras do plano FairMove.</AppText>
+        <AppText variant="body">• O saldo fica separado da carteira de saque e segue os termos da Reserva.</AppText>
         <AppText variant="body">
           • Emergências validadas liberam o resgate — ou você recebe tudo ao desligar.
         </AppText>

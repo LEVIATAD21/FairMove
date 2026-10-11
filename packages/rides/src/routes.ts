@@ -15,7 +15,7 @@ import { getDriverByUserId, loadRide, loadRideForUser } from "./access";
 import { calculateQuote, PRICING_RULES } from "../../pricing/src/engine/calculator";
 import { applyPromotion, releaseRedemptions } from "../../promotions/src/engine/promotion-engine";
 import { setDriverAvailability } from "../../matching/src/engine/matching-engine";
-import { settleRidePayment } from "../../payments/src/settlement";
+import { PaymentProviderNotConfiguredError, settleRidePayment } from "../../payments/src/settlement";
 import { DuplicateOperationError } from "../../wallets/src/engine/wallet-engine";
 import { eventPublisher } from "../../realtime/src/redis/publisher";
 
@@ -562,9 +562,8 @@ router.post("/:rideId/complete", requireAuth, async (req: Request, res: Response
 
     // BUG-X2: guarda da regra de negócio "motorista recebe exatamente o que o
     // passageiro paga". Quem CONSTRÓI o input de settle é esta rota (as duas
-    // únicas chamadas de settleRidePayment são daqui) — settlement.ts fica
-    // intocado (congelamento PSP). Divergência = corrupção de dados: recusa
-    // ANTES do claim de status e do dinheiro, com erro explícito.
+    // únicas chamadas de settleRidePayment são daqui. Divergência = corrupção
+    // de dados: recusa ANTES do claim de status e do dinheiro, com erro explícito.
     if (fareCents !== driverCreditCents) {
       console.error(
         `[settlement] ride ${rideId}: business rule violation — ` +
@@ -668,6 +667,10 @@ router.post("/:rideId/complete", requireAuth, async (req: Request, res: Response
       currency: "BRL",
     });
   } catch (error) {
+    if (error instanceof PaymentProviderNotConfiguredError) {
+      res.status(503).json({ error: "payment_provider_not_configured" });
+      return;
+    }
     if (error instanceof Error && error.name === "InsufficientFundsError") {
       res.status(402).json({ error: "Payment could not be processed" });
       return;

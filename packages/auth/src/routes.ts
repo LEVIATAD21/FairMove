@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { db, users, sessions, verificationTokens, onboardingCompletion } from "@fairmove/shared-db";
-import { eq, and, ne } from "drizzle-orm";
+import { eq, and, ne, gt } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "crypto";
 import { sign, verify, TokenExpiredError, JsonWebTokenError } from "jsonwebtoken";
@@ -24,6 +24,11 @@ import {
   getRefreshTokenSecret,
   type JwtPayloadShape,
 } from "./middleware";
+import {
+  isEmailDeliveryConfigured,
+  sendPasswordResetEmail,
+  sendVerificationEmail,
+} from "./email-delivery";
 
 const router = Router();
 
@@ -65,9 +70,10 @@ function ttlToMs(ttl: string): number {
   return value * factor[unit];
 }
 
-/** Verificação de e-mail exigida apenas com REQUIRE_EMAIL_VERIFICATION=true. */
+/** In production, verified email is mandatory; development can opt in explicitly. */
 function emailVerificationRequired(): boolean {
-  return process.env.REQUIRE_EMAIL_VERIFICATION === "true";
+  return process.env.NODE_ENV === "production" ||
+    process.env.REQUIRE_EMAIL_VERIFICATION === "true";
 }
 
 /** Expor o código na resposta só em dev (EXPOSE_VERIFICATION_CODE=true). */
@@ -136,6 +142,16 @@ router.post("/register", validateBody(RegisterSchema), async (req: Request, res:
   try {
     const { name, email, password } = req.body;
 
+    // The code is only stored locally; no transactional email provider exists yet.
+    // Do not create a user that can never receive the required verification code.
+    if (
+      emailVerificationRequired() &&
+      process.env.NODE_ENV === "production" &&
+      !isEmailDeliveryConfigured()
+    ) {
+      return res.status(503).json({ error: "email_verification_provider_not_configured" });
+    }
+
     const existingUser = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
     if (existingUser.length > 0) {
       // Mensagem única de falha de registro (não confirma qual campo colidiu —
@@ -171,6 +187,14 @@ router.post("/register", validateBody(RegisterSchema), async (req: Request, res:
     // REQUIRE_EMAIL_VERIFICATION: conta criada, MAS sem tokens até o código.
     if (emailVerificationRequired()) {
       const verificationCode = await issueVerificationCode(newUser.id);
+      if (process.env.NODE_ENV === "production") {
+        try {
+          await sendVerificationEmail(email, verificationCode);
+        } catch {
+          console.error("[email] verification delivery failed");
+          return res.status(503).json({ error: "email_delivery_failed_retry" });
+        }
+      }
       res.status(201).json({
         user: publicUser(newUser),
         verificationRequired: true,
@@ -372,6 +396,11 @@ router.post("/verify-email", validateBody(VerifyEmailSchema), async (req: Reques
 // Reenviar código de verificação (resposta genérica: não revela se existe conta)
 router.post("/resend-verification", validateBody(ForgotPasswordSchema), async (req: Request, res: Response) => {
   try {
+    // Fail explicitly when a production sender is unavailable; never claim
+    // that a code was delivered if only a hash could be persisted.
+    if (process.env.NODE_ENV === "production" && !isEmailDeliveryConfigured()) {
+      return res.status(503).json({ error: "email_delivery_provider_not_configured" });
+    }
     const { email } = req.body as { email: string };
     const response = {
       message: "If an account with this email needs verification, a new code has been sent.",
@@ -380,6 +409,14 @@ router.post("/resend-verification", validateBody(ForgotPasswordSchema), async (r
     const found = await db.select().from(users).where(eq(users.email, email));
     if (found.length > 0 && !found[0].emailVerifiedAt) {
       const verificationCode = await issueVerificationCode(found[0].id);
+      if (process.env.NODE_ENV === "production") {
+        try {
+          await sendVerificationEmail(email, verificationCode);
+        } catch {
+          console.error("[email] verification resend failed");
+          return res.status(503).json({ error: "email_delivery_failed_retry" });
+        }
+      }
       console.info(`[verify-email] userId=${found[0].id} (code redacted from logs)`);
       res.json(
         exposeVerificationCode() ? { ...response, verificationCode } : response
@@ -434,6 +471,12 @@ router.post(
   validateBody(ForgotPasswordSchema),
   async (req: Request, res: Response) => {
     try {
+      // Require a real sender in production: a stored token is useless if it
+      // cannot reach the account owner.
+      if (process.env.NODE_ENV === "production" && !isEmailDeliveryConfigured()) {
+        return res.status(503).json({ error: "password_reset_provider_not_configured" });
+      }
+
       const { email } = req.body;
 
       const user = await db.select().from(users).where(eq(users.email, email));
@@ -458,13 +501,19 @@ router.post(
         expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hora
       });
 
-      // TODO: integrar provedor de e-mail (SMTP/Mailgun/SES).
-      // O token de reset é SEGREDO: jamais vai para log (vazaria o vetor de
-      // takeover de conta). No dev, o corpo da resposta pode trazê-lo quando
-      // EXPOSE_RESET_TOKEN=true (única via permitida).
+      // The token is secret: never log it. Production sends it over the
+      // configured transactional provider; development may expose it only
+      // when the explicit test flag is enabled.
+      if (process.env.NODE_ENV === "production") {
+        try {
+          await sendPasswordResetEmail(email, rawToken);
+        } catch {
+          console.error("[email] password-reset delivery failed");
+          return res.status(503).json({ error: "email_delivery_failed_retry" });
+        }
+      }
       console.info(`[password-reset] userId=${user[0].id} (token redacted from logs)`);
 
-      // Em desenvolvimento, permite obter o token para testar o fluxo.
       const exposeToken =
         process.env.NODE_ENV !== "production" && process.env.EXPOSE_RESET_TOKEN === "true";
       res.json(exposeToken ? { ...response, resetToken: rawToken } : response);
@@ -482,31 +531,50 @@ router.post(
   async (req: Request, res: Response) => {
     try {
       const { token, password } = req.body;
-
-      const found = await db
-        .select()
-        .from(verificationTokens)
-        .where(eq(verificationTokens.token, hashToken(token)));
-
-      if (found.length === 0) {
-        res.status(400).json({ error: "Invalid or expired reset token" });
-        return;
-      }
-
-      if (found[0].expiresAt && found[0].expiresAt.getTime() < Date.now()) {
-        res.status(400).json({ error: "Invalid or expired reset token" });
-        return;
-      }
-
+      // Password-reset tokens are lowercase hex at issuance. Normalize the
+      // pasted representation so mobile keyboard casing does not break it.
+      const tokenHash = hashToken(String(token).toLowerCase());
       const passwordHash = await hashPassword(password);
-      await db
-        .update(users)
-        .set({ passwordHash, updatedAt: new Date() })
-        .where(eq(users.id, found[0].userId));
+      const now = new Date();
 
-      // Token de uso único + força reautenticação
-      await db.delete(verificationTokens).where(eq(verificationTokens.userId, found[0].userId));
-      await db.delete(sessions).where(eq(sessions.userId, found[0].userId));
+      // Consume the token and update password/revoke sessions in the SAME
+      // transaction. Concurrent requests can consume this one-time token once.
+      const didReset = await db.transaction(async (tx) => {
+        const consumed = await tx
+          .delete(verificationTokens)
+          .where(
+            and(
+              eq(verificationTokens.token, tokenHash),
+              gt(verificationTokens.expiresAt, now)
+            )
+          )
+          .returning({ userId: verificationTokens.userId });
+
+        if (consumed.length === 0) return false;
+        if (consumed.length !== 1) {
+          throw new Error("Password reset token uniqueness invariant violated");
+        }
+
+        const userId = consumed[0].userId;
+        const updatedUsers = await tx
+          .update(users)
+          .set({ passwordHash, updatedAt: now })
+          .where(eq(users.id, userId))
+          .returning({ id: users.id });
+        if (updatedUsers.length !== 1) {
+          throw new Error("Password reset target user no longer exists");
+        }
+
+        // Token de uso único + força reautenticação; all operations are atomic.
+        await tx.delete(verificationTokens).where(eq(verificationTokens.userId, userId));
+        await tx.delete(sessions).where(eq(sessions.userId, userId));
+        return true;
+      });
+
+      if (!didReset) {
+        res.status(400).json({ error: "Invalid or expired reset token" });
+        return;
+      }
 
       res.json({ message: "Password has been reset. Please sign in again." });
     } catch (error) {

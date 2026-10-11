@@ -1,5 +1,5 @@
 /**
- * Exibição do ciclo de cobrança progressiva na tela de perfil.
+ * Exibição da mensalidade fixa FairMove na tela de perfil.
  * Fonte única de verdade: `packages/subscriptions` (mesma regra cobrada no backend).
  */
 import {
@@ -14,15 +14,15 @@ export function cycleLabel(monthsActive: number): string {
   return `Você está no Mês ${month} do Plano FairMove`;
 }
 
-/** "R$ 130,00 Plataforma | R$ 70,00 Reserva" (ou opt-out: "R$ 150,00 | R$ 0,00"). */
-export function feeSplitLabel(monthsActive: number, optedOutOfReserve: boolean): string {
-  const fee = calculateMonthlyFee({ monthsActive, optedOutOfReserve });
+/** "R$ 59,00 Plataforma | R$ 41,00 Reserva" em todos os meses pagos. */
+export function feeSplitLabel(monthsActive: number, _optedOutOfReserve = false): string {
+  const fee = calculateMonthlyFee({ monthsActive });
   return `${formatBRL(fee.platformShare)} Plataforma | ${formatBRL(fee.reserveShare)} Reserva`;
 }
 
-/** Texto da mensalidade total do ciclo ("Mensalidade: R$ 200,00"). */
-export function monthlyFeeLabel(monthsActive: number, optedOutOfReserve: boolean): string {
-  const fee = calculateMonthlyFee({ monthsActive, optedOutOfReserve });
+/** Texto da mensalidade: grátis no primeiro mês; R$ 100,00 a partir do segundo. */
+export function monthlyFeeLabel(monthsActive: number, _optedOutOfReserve = false): string {
+  const fee = calculateMonthlyFee({ monthsActive });
   return `Mensalidade: ${formatBRL(fee.totalFee)}`;
 }
 

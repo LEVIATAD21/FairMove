@@ -3,15 +3,64 @@ import { z } from "zod";
 import { requireRole } from "../../auth/src/middleware";
 import { validateBody } from "@fairmove/validation";
 import { MockPaymentProvider } from "./index";
+import {
+  isMercadoPagoConfigured,
+  MercadoPagoNotConfiguredError,
+  MercadoPagoRequestError,
+  processMercadoPagoPaymentWebhook,
+  verifyMercadoPagoWebhookSignature,
+} from "./mercado-pago";
 
 const router = Router();
 const paymentProvider = new MockPaymentProvider();
 
+// Public PSP callback must be registered BEFORE the legacy admin-only mock
+// middleware. The request is authenticated cryptographically with MP's HMAC
+// signature and the payment is independently fetched from Mercado Pago.
+router.post("/webhooks/mercadopago", async (req: Request, res: Response) => {
+  if (!isMercadoPagoConfigured()) {
+    return res.status(503).json({ error: "payment_gateway_not_configured" });
+  }
+
+  const signature = req.headers["x-signature"];
+  const requestId = req.headers["x-request-id"];
+  const dataId = req.query["data.id"];
+  if (typeof dataId !== "string" || !dataId || typeof signature !== "string" || typeof requestId !== "string") {
+    return res.status(400).json({ error: "invalid_webhook_request" });
+  }
+
+  if (!verifyMercadoPagoWebhookSignature(signature, requestId, dataId)) {
+    return res.status(401).json({ error: "invalid_webhook_signature" });
+  }
+
+  const eventType = req.body?.type ?? req.body?.topic ?? req.query.type ?? req.query.topic;
+  if (eventType !== "payment") return res.status(200).json({ received: true, ignored: true });
+
+  try {
+    const result = await processMercadoPagoPaymentWebhook(dataId);
+    return res.status(200).json({ received: true, result });
+  } catch (error) {
+    if (error instanceof MercadoPagoNotConfiguredError) {
+      return res.status(503).json({ error: "payment_gateway_not_configured" });
+    }
+    // Never log the webhook body, payer details, signature or access token.
+    console.error("[mercadopago-webhook] processing failed", error instanceof Error ? error.name : "UnknownError");
+    const status = error instanceof MercadoPagoRequestError ? 502 : 500;
+    return res.status(status).json({ error: "payment_notification_processing_failed" });
+  }
+});
+
 // ---------------------------------------------------------------------------
-// Autorização: apenas operação interna (admin). O gateway movimenta dinheiro —
-// sem requireRole qualquer conta autenticada (ou anônima) capturava/reembolsava.
+// Segurança: o adaptador abaixo é simulado e guarda transações apenas em memória.
+// Nunca permitir que ele autorize/capture/refunde em produção: responder 503 até
+// um PSP real, persistente e verificado por webhook ser configurado.
 // ---------------------------------------------------------------------------
-router.use(requireRole("admin"));
+router.use((req: Request, res: Response, next) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(503).json({ error: "payment_provider_not_configured" });
+  }
+  return requireRole("admin")(req, res, next);
+});
 
 const AuthorizeSchema = z.object({
   amount: z.number().positive().max(1_000_000_000),
