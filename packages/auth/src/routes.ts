@@ -24,6 +24,11 @@ import {
   getRefreshTokenSecret,
   type JwtPayloadShape,
 } from "./middleware";
+import {
+  isEmailDeliveryConfigured,
+  sendPasswordResetEmail,
+  sendVerificationEmail,
+} from "./email-delivery";
 
 const router = Router();
 
@@ -65,9 +70,10 @@ function ttlToMs(ttl: string): number {
   return value * factor[unit];
 }
 
-/** Verificação de e-mail exigida apenas com REQUIRE_EMAIL_VERIFICATION=true. */
+/** In production, verified email is mandatory; development can opt in explicitly. */
 function emailVerificationRequired(): boolean {
-  return process.env.REQUIRE_EMAIL_VERIFICATION === "true";
+  return process.env.NODE_ENV === "production" ||
+    process.env.REQUIRE_EMAIL_VERIFICATION === "true";
 }
 
 /** Expor o código na resposta só em dev (EXPOSE_VERIFICATION_CODE=true). */
@@ -138,7 +144,11 @@ router.post("/register", validateBody(RegisterSchema), async (req: Request, res:
 
     // The code is only stored locally; no transactional email provider exists yet.
     // Do not create a user that can never receive the required verification code.
-    if (emailVerificationRequired() && process.env.NODE_ENV === "production") {
+    if (
+      emailVerificationRequired() &&
+      process.env.NODE_ENV === "production" &&
+      !isEmailDeliveryConfigured()
+    ) {
       return res.status(503).json({ error: "email_verification_provider_not_configured" });
     }
 
@@ -177,6 +187,14 @@ router.post("/register", validateBody(RegisterSchema), async (req: Request, res:
     // REQUIRE_EMAIL_VERIFICATION: conta criada, MAS sem tokens até o código.
     if (emailVerificationRequired()) {
       const verificationCode = await issueVerificationCode(newUser.id);
+      if (process.env.NODE_ENV === "production") {
+        try {
+          await sendVerificationEmail(email, verificationCode);
+        } catch {
+          console.error("[email] verification delivery failed");
+          return res.status(503).json({ error: "email_delivery_failed_retry" });
+        }
+      }
       res.status(201).json({
         user: publicUser(newUser),
         verificationRequired: true,
@@ -378,9 +396,9 @@ router.post("/verify-email", validateBody(VerifyEmailSchema), async (req: Reques
 // Reenviar código de verificação (resposta genérica: não revela se existe conta)
 router.post("/resend-verification", validateBody(ForgotPasswordSchema), async (req: Request, res: Response) => {
   try {
-    // No email sender is implemented yet. Fail explicitly rather than claim
-    // that a verification code was delivered when only a hash is stored.
-    if (process.env.NODE_ENV === "production") {
+    // Fail explicitly when a production sender is unavailable; never claim
+    // that a code was delivered if only a hash could be persisted.
+    if (process.env.NODE_ENV === "production" && !isEmailDeliveryConfigured()) {
       return res.status(503).json({ error: "email_delivery_provider_not_configured" });
     }
     const { email } = req.body as { email: string };
@@ -391,6 +409,14 @@ router.post("/resend-verification", validateBody(ForgotPasswordSchema), async (r
     const found = await db.select().from(users).where(eq(users.email, email));
     if (found.length > 0 && !found[0].emailVerifiedAt) {
       const verificationCode = await issueVerificationCode(found[0].id);
+      if (process.env.NODE_ENV === "production") {
+        try {
+          await sendVerificationEmail(email, verificationCode);
+        } catch {
+          console.error("[email] verification resend failed");
+          return res.status(503).json({ error: "email_delivery_failed_retry" });
+        }
+      }
       console.info(`[verify-email] userId=${found[0].id} (code redacted from logs)`);
       res.json(
         exposeVerificationCode() ? { ...response, verificationCode } : response
@@ -445,10 +471,9 @@ router.post(
   validateBody(ForgotPasswordSchema),
   async (req: Request, res: Response) => {
     try {
-      // No production email sender is configured. Returning a success message
-      // while only saving a reset hash would strand the user and misrepresent
-      // account-recovery functionality.
-      if (process.env.NODE_ENV === "production") {
+      // Require a real sender in production: a stored token is useless if it
+      // cannot reach the account owner.
+      if (process.env.NODE_ENV === "production" && !isEmailDeliveryConfigured()) {
         return res.status(503).json({ error: "password_reset_provider_not_configured" });
       }
 
@@ -476,12 +501,19 @@ router.post(
         expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hora
       });
 
-      // O token de reset é SEGREDO: jamais vai para log (vazaria o vetor de
-      // takeover de conta). O envio por e-mail de produção permanece bloqueado
-      // até que um provedor real de entrega transacional seja integrado.
+      // The token is secret: never log it. Production sends it over the
+      // configured transactional provider; development may expose it only
+      // when the explicit test flag is enabled.
+      if (process.env.NODE_ENV === "production") {
+        try {
+          await sendPasswordResetEmail(email, rawToken);
+        } catch {
+          console.error("[email] password-reset delivery failed");
+          return res.status(503).json({ error: "email_delivery_failed_retry" });
+        }
+      }
       console.info(`[password-reset] userId=${user[0].id} (token redacted from logs)`);
 
-      // Em desenvolvimento, permite obter o token para testar o fluxo.
       const exposeToken =
         process.env.NODE_ENV !== "production" && process.env.EXPOSE_RESET_TOKEN === "true";
       res.json(exposeToken ? { ...response, resetToken: rawToken } : response);
