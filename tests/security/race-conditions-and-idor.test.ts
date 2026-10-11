@@ -17,7 +17,7 @@ const describeIfDb = hasDb ? describe : describe.skip;
 
 import express from "express";
 import request from "supertest";
-import { createHash, randomBytes, randomUUID } from "crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "crypto";
 import { sign } from "jsonwebtoken";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -32,8 +32,10 @@ import {
   wallets,
   ledger_transactions,
   ledger_entries,
+  walletDeposits,
 } from "../../packages/shared-db/src/index";
 import { walletEngine } from "../../packages/wallets/src/engine/wallet-engine";
+import { createPixDeposit, processMercadoPagoPaymentWebhook, verifyMercadoPagoWebhookSignature } from "../../packages/payments/src/mercado-pago";
 import {
   getJwtSecret,
   getRefreshTokenSecret,
@@ -151,6 +153,7 @@ describeIfDb("security: HTTP routes", () => {
         await db.delete(rideLocationEvents).where(inArray(rideLocationEvents.rideId, rideIds));
         await db.delete(rides).where(inArray(rides.id, rideIds));
       }
+      await db.delete(walletDeposits).where(inArray(walletDeposits.userId, createdUserIds));
       // Ledger e wallets criados pelos testes financeiros (FKs antes de users).
       const walletRows = await db
         .select({ id: wallets.id })
@@ -573,4 +576,120 @@ describeIfDb("security: HTTP routes", () => {
       expect(rows).toHaveLength(0); // revogada
     });
   });
+
+  describe("Mercado Pago Pix: assinatura e liquidação idempotente", () => {
+    it("valida a assinatura HMAC e rejeita alterações no conteúdo", () => {
+      const secret = "test-webhook-secret-not-real";
+      const timestamp = "1791728100";
+      const requestId = "pix-test-request-01";
+      const dataId = "123456789";
+      const manifest = `id:${dataId.toLowerCase()};request-id:${requestId};ts:${timestamp};`;
+      const digest = createHmac("sha256", secret).update(manifest).digest("hex");
+      const signature = `ts=${timestamp},v1=${digest}`;
+
+      expect(verifyMercadoPagoWebhookSignature(signature, requestId, dataId, secret)).toBe(true);
+      expect(verifyMercadoPagoWebhookSignature(signature, "different-request", dataId, secret)).toBe(false);
+      expect(verifyMercadoPagoWebhookSignature(signature, requestId, "999", secret)).toBe(false);
+      expect(verifyMercadoPagoWebhookSignature(undefined, requestId, dataId, secret)).toBe(false);
+    });
+
+    it("cria Pix com idempotência e credita exatamente uma vez após aprovação consultada no provedor", async () => {
+      const payer = await actor("passenger");
+      const original = {
+        nodeEnv: process.env.NODE_ENV,
+        accessToken: process.env.MP_ACCESS_TOKEN,
+        webhookSecret: process.env.MP_WEBHOOK_SECRET,
+        webhookUrl: process.env.MERCADO_PAGO_WEBHOOK_URL,
+      };
+      process.env.NODE_ENV = "test";
+      process.env.MP_ACCESS_TOKEN = "test-mp-access-token-not-real";
+      process.env.MP_WEBHOOK_SECRET = "test-mp-webhook-secret-not-real";
+      process.env.MERCADO_PAGO_WEBHOOK_URL = "http://localhost/api/payments/webhooks/mercadopago";
+
+      let createdPayment: Record<string, unknown> | null = null;
+      const fetchMock = jest.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/v1/payments") && init?.method === "POST") {
+          const body = JSON.parse(String(init.body)) as {
+            transaction_amount: number;
+            external_reference: string;
+            metadata: Record<string, unknown>;
+            payer: { email: string; identification: { type: string; number: string } };
+          };
+          expect(body.payer.email).toBe(payer.email);
+          expect(body.payer.identification).toEqual({ type: "CPF", number: "52998224725" });
+          const headers = init.headers as Record<string, string>;
+          expect(headers["X-Idempotency-Key"]).toBeTruthy();
+          createdPayment = {
+            id: "mp-test-payment-001",
+            status: "pending",
+            transaction_amount: body.transaction_amount,
+            currency_id: "BRL",
+            payment_method_id: "pix",
+            external_reference: body.external_reference,
+            live_mode: false,
+            metadata: body.metadata,
+            point_of_interaction: {
+              transaction_data: {
+                qr_code: "000201-pix-payload",
+                qr_code_base64: "iVBORw0KGgo=",
+                ticket_url: "https://www.mercadopago.com.br/",
+              },
+            },
+          };
+          return new Response(JSON.stringify(createdPayment), { status: 201 });
+        }
+        if (url.endsWith("/v1/payments/mp-test-payment-001") && init?.method === "GET") {
+          if (!createdPayment) throw new Error("Create must happen before status lookup");
+          return new Response(JSON.stringify({ ...createdPayment, status: "approved" }), { status: 200 });
+        }
+        throw new Error("Unexpected provider request");
+      });
+
+      try {
+        const input = {
+          userId: payer.id,
+          payerEmail: payer.email,
+          payerCpf: "529.982.247-25",
+          amountCents: 2500,
+          idempotencyKey: `pix-${randomUUID()}`,
+        };
+        const first = await createPixDeposit(input);
+        const retry = await createPixDeposit(input);
+        expect(first.depositId).toBe(retry.depositId);
+        expect(first.qrCode).toBe("000201-pix-payload");
+        expect(fetchMock.mock.calls.filter((call) => String(call[0]).endsWith("/v1/payments") && call[1]?.method === "POST")).toHaveLength(1);
+
+        expect(await processMercadoPagoPaymentWebhook("mp-test-payment-001")).toBe("credited");
+        expect(await processMercadoPagoPaymentWebhook("mp-test-payment-001")).toBe("already_processed");
+        expect(await walletEngine.getAvailableBalance(payer.id)).toBe(2500);
+
+        const deposits = await db.select().from(walletDeposits).where(eq(walletDeposits.id, first.depositId));
+        expect(deposits).toHaveLength(1);
+        expect(deposits[0].status).toBe("approved");
+        expect(deposits[0].providerPaymentId).toBe("mp-test-payment-001");
+
+        const wallet = await walletEngine.getWallet(payer.id);
+        const credits = await db
+          .select({ id: ledger_transactions.id })
+          .from(ledger_transactions)
+          .where(and(
+            eq(ledger_transactions.walletId, wallet!.id),
+            eq(ledger_transactions.idempotencyKey, `mercadopago:pix:deposit:${first.depositId}`)
+          ));
+        expect(credits).toHaveLength(1);
+      } finally {
+        fetchMock.mockRestore();
+        const restore = (name: string, value: string | undefined) => {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        };
+        restore("NODE_ENV", original.nodeEnv);
+        restore("MP_ACCESS_TOKEN", original.accessToken);
+        restore("MP_WEBHOOK_SECRET", original.webhookSecret);
+        restore("MERCADO_PAGO_WEBHOOK_URL", original.webhookUrl);
+      }
+    });
+  });
+
 });
