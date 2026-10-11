@@ -562,9 +562,8 @@ router.post("/:rideId/complete", requireAuth, async (req: Request, res: Response
 
     // BUG-X2: guarda da regra de negócio "motorista recebe exatamente o que o
     // passageiro paga". Quem CONSTRÓI o input de settle é esta rota (as duas
-    // únicas chamadas de settleRidePayment são daqui) — settlement.ts fica
-    // intocado (congelamento PSP). Divergência = corrupção de dados: recusa
-    // ANTES do claim de status e do dinheiro, com erro explícito.
+    // únicas chamadas de settleRidePayment são daqui. Divergência = corrupção
+    // de dados: recusa ANTES do claim de status e do dinheiro, com erro explícito.
     if (fareCents !== driverCreditCents) {
       console.error(
         `[settlement] ride ${rideId}: business rule violation — ` +
