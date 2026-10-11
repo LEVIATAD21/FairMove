@@ -83,6 +83,14 @@ jobs:
           node --check apps/driver/app.config.js
           node -e "const fs=require('node:fs'); for (const f of ['apps/passenger/app.json','apps/driver/app.json','apps/passenger/eas.json','apps/driver/eas.json']) JSON.parse(fs.readFileSync(f,'utf8'))"
 
+      - name: Bundle production Android apps
+        env:
+          EAS_BUILD_PROFILE: production
+          EXPO_PUBLIC_API_URL: https://ci.fairmove.invalid/api/v1
+        run: |
+          pnpm --filter passenger exec expo export --platform android --output-dir /tmp/fairmove-passenger-export
+          pnpm --filter driver exec expo export --platform android --output-dir /tmp/fairmove-driver-export
+
       - name: Build TypeScript
         run: pnpm build
 
