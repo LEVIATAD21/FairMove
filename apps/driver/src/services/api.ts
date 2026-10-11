@@ -4,7 +4,6 @@ import {
   getSessionUser,
   saveAccessToken,
   saveSession,
-  setSessionUser,
   type SessionUser,
 } from "./session";
 
@@ -341,14 +340,6 @@ export const api = {
     return request<SubscriptionResponse>(`/subscriptions/${user.id}`);
   },
 
-  optOutReserve(): Promise<{ optedOutOfReserve: boolean }> {
-    const user = getSessionUser();
-    if (!user) return Promise.reject(new ApiError(401, { error: "no_session" }));
-    return request<{ optedOutOfReserve: boolean }>(
-      `/subscriptions/${user.id}/opt-out`,
-      { method: "POST" }
-    );
-  },
 
   /** Status REAL do motorista no matching (online/offline/on_trip). */
   setDriverStatus(status: "online" | "offline" | "on_trip"): Promise<{
