@@ -185,6 +185,17 @@ export type LedgerTransaction = {
   created_at: string;
 };
 
+export type PixDepositResponse = {
+  depositId: string;
+  amountCents: number;
+  currency: "BRL";
+  status: string;
+  qrCode: string | null;
+  qrCodeBase64: string | null;
+  ticketUrl: string | null;
+  expiresAt: string | null;
+};
+
 export type RideHistoryItem = {
   id: string;
   status: string;
@@ -319,6 +330,13 @@ export const api = {
 
   getBalance(): Promise<WalletBalance> {
     return request<WalletBalance>("/wallets/me/balance");
+  },
+
+  createPixDeposit(amount: number, idempotencyKey: string): Promise<PixDepositResponse> {
+    return request<PixDepositResponse>("/wallets/deposit", {
+      method: "POST",
+      body: { amount, idempotencyKey },
+    });
   },
 
   async getTransactions(): Promise<LedgerTransaction[]> {
