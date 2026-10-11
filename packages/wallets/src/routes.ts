@@ -18,6 +18,7 @@ const router = Router();
 const PixDepositSchema = z.object({
   amount: z.number().min(5).max(5000).multipleOf(0.01),
   idempotencyKey: z.string().regex(/^[A-Za-z0-9._:-]{16,128}$/),
+  payerCpf: z.string().regex(/^[0-9.\\-\\s]{11,14}$/),
 });
 
 function handleError(res: Response, error: unknown): void {
@@ -103,10 +104,11 @@ router.post(
         return res.status(403).json({ error: "email_verification_required" });
       }
 
-      const { amount, idempotencyKey } = req.body as z.infer<typeof PixDepositSchema>;
+      const { amount, idempotencyKey, payerCpf } = req.body as z.infer<typeof PixDepositSchema>;
       const deposit = await createPixDeposit({
         userId,
         payerEmail: account.email,
+        payerCpf,
         amountCents: Math.round(amount * 100),
         idempotencyKey,
       });
