@@ -8,10 +8,16 @@ const router = Router();
 const paymentProvider = new MockPaymentProvider();
 
 // ---------------------------------------------------------------------------
-// Autorização: apenas operação interna (admin). O gateway movimenta dinheiro —
-// sem requireRole qualquer conta autenticada (ou anônima) capturava/reembolsava.
+// Segurança: o adaptador abaixo é simulado e guarda transações apenas em memória.
+// Nunca permitir que ele autorize/capture/refunde em produção: responder 503 até
+// um PSP real, persistente e verificado por webhook ser configurado.
 // ---------------------------------------------------------------------------
-router.use(requireRole("admin"));
+router.use((req: Request, res: Response, next) => {
+  if (process.env.NODE_ENV === "production") {
+    return res.status(503).json({ error: "payment_provider_not_configured" });
+  }
+  return requireRole("admin")(req, res, next);
+});
 
 const AuthorizeSchema = z.object({
   amount: z.number().positive().max(1_000_000_000),
