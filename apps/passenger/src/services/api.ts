@@ -339,6 +339,16 @@ export const api = {
     });
   },
 
+  getLatestPixDeposit(): Promise<PixDepositResponse | null> {
+    return request<PixDepositResponse | null>("/wallets/deposits/latest");
+  },
+
+  refreshPixDeposit(depositId: string): Promise<PixDepositResponse> {
+    return request<PixDepositResponse>(`/wallets/deposits/${encodeURIComponent(depositId)}/refresh`, {
+      method: "POST",
+    });
+  },
+
   async getTransactions(): Promise<LedgerTransaction[]> {
     const user = getSessionUser();
     if (!user) return [];
