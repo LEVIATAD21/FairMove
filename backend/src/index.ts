@@ -52,7 +52,10 @@ function assertRequiredEnv(): void {
 
   const refreshSecret = process.env.REFRESH_TOKEN_SECRET;
   if (!refreshSecret) {
-    console.warn("[config] REFRESH_TOKEN_SECRET ausente — usando JWT_SECRET para refresh tokens.");
+    if (isProduction) {
+      throw new Error("REFRESH_TOKEN_SECRET is required in production.");
+    }
+    console.warn("[config] REFRESH_TOKEN_SECRET ausente — usando JWT_SECRET para refresh tokens apenas fora de produção.");
   } else {
     if (refreshSecret.length < minSecretLength) {
       throw new Error(
