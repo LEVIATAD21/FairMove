@@ -2,9 +2,9 @@
  * QA AUDIT — Área 1: lógica de assinaturas e trial (execução real, não estática).
  *
  * Cenários da missão:
- *  1. Opt-out no Mês 1 → Mês 2 cobra R$150? (e mês 3+ continua R$150 fixo)
+ *  1. A reserva permanece obrigatória em todos os ciclos pagos (R$41)
  *  2. Cancel → reativa: trial é re-grantado? (deve ser NÃO)
- *  3. Trial expirado há 6 meses reativa → R$100 ou R$200? (deve ser R$200)
+ *  3. Trial expirado há 6 meses reativa → mensalidade fixa de R$100
  *  4. subscriptionStartedAt no futuro → não explode, não cobra errado
  *  5. Timezone: cálculo de mês depende da TZ do servidor? (não deve)
  *
@@ -14,7 +14,7 @@
  *  (calendário no instante do chamado) e `currentBillingCycle` é apenas
  *  fallback. Como NÃO existe job automático de cobrança (só rota admin),
  *  o atraso do disparo é a regra — e um mesmo estado de assinatura cobra
- *  R$100 ou R$200 conforme o dia em que o admin aciona.
+ *  valor diferente conforme o dia em que o admin aciona.
  *
  * Requer DATABASE_URL.
  */
@@ -149,16 +149,19 @@ describeIfDb("QA audit: assinaturas e trial", () => {
     await db.delete(users).where(inArray(users.id, createdUserIds));
   });
 
-  test("[MISSÃO 1/2] opt-out: R$150 no mês 2 e fixo no mês 3+; opt-out repetido é bloqueado", async () => {
+  test("[MISSÃO 1/2] a reserva de R$41 é obrigatória e opt-out não altera assinatura", async () => {
     // Regra da tabela: mês 1 com opt-out continua R$0 (trial intocável).
     expect(calculateMonthlyFee({ monthsActive: 1, optedOutOfReserve: true }).totalFee).toBe(0);
-    // Mês 2 com opt-out → R$150 (não R$100).
-    expect(calculateMonthlyFee({ monthsActive: 2, optedOutOfReserve: true }).totalFee).toBe(15_000);
-    // Mês 3+ com opt-out → continua R$150 fixo (não volta para R$200).
-    expect(calculateMonthlyFee({ monthsActive: 3, optedOutOfReserve: true }).totalFee).toBe(15_000);
-    expect(calculateMonthlyFee({ monthsActive: 48, optedOutOfReserve: true }).totalFee).toBe(15_000);
+    // Flags legadas nunca alteram o valor ou a divisão de uma mensalidade paga.
+    for (const monthsActive of [2, 3, 48]) {
+      expect(calculateMonthlyFee({ monthsActive, optedOutOfReserve: true })).toMatchObject({
+        totalFee: 10_000,
+        platformShare: 5_900,
+        reserveShare: 4_100,
+      });
+    }
 
-    // Execução real: opt-out duas vezes no engine (a rota mapeia 2º → 409).
+    // A tentativa de opt-out é recusada e não altera o estado financeiro.
     const userId = await makeUser();
     await subscriptionEngine.activateSubscription(userId);
     const first = await subscriptionEngine.optOutOfReserve(userId);
@@ -166,10 +169,11 @@ describeIfDb("QA audit: assinaturas e trial", () => {
     console.log(
       `[MISSÃO 1] opt-out #1 success=${first.success} | #2 success=${second.success} msg="${second.message}"`
     );
-    expect(first.success).toBe(true);
+    expect(first.success).toBe(false);
+    expect(first.status).toBe("not_allowed");
     expect(second.success).toBe(false);
     const sub = await subscriptionEngine.getSubscription(userId);
-    expect(sub!.optedOutOfReserve).toBe(true);
+    expect(sub!.optedOutOfReserve).toBe(false);
   });
 
   test("[MISSÃO 3] cancel → reativação NÃO re-granta trial nem estende período vencido", async () => {
@@ -195,7 +199,7 @@ describeIfDb("QA audit: assinaturas e trial", () => {
     expect(after!.currentPeriodEnd!.getTime()).toBe(periodBefore);
   });
 
-  test("[MISSÃO 4] trial expirado há 6 meses → reativação cobra R$200 (pleno), nunca R$100", async () => {
+  test("[MISSÃO 4] trial expirado há 6 meses → mensalidade fixa de R$100", async () => {
     const userId = await makeUser();
     const startedAt = new Date(Date.now() - 180 * DAY);
     await seedSub(userId, {
@@ -217,7 +221,7 @@ describeIfDb("QA audit: assinaturas e trial", () => {
       `[MISSÃO 4] reativação após 180 dias → charge: success=${charge.success} tier=${charge.tier} amount=${charge.amountChargedCents} msg="${charge.message}"`
     );
     expect(charge.success).toBe(true);
-    expect(charge.amountChargedCents).toBe(20_000); // mês ativo ~7 → pleno
+    expect(charge.amountChargedCents).toBe(10_000); // todo ciclo pago custa R$100
   });
 
   test("[MISSÃO 5] subscriptionStartedAt no futuro: activate não degrada o ciclo e charge não cobra", async () => {
@@ -353,11 +357,11 @@ describeIfDb("QA audit: assinaturas e trial", () => {
       `[BUG-D] histórico de reserva: ${reserveHistory.length} linha(s) ${JSON.stringify(reserveHistory)}`
     );
     expect(reserveHistory).toHaveLength(1);
-    expect(reserveHistory[0].amount).toBe(4_900); // 49% de R$100,00
+    expect(reserveHistory[0].amount).toBe(4_100); // R$41,00 fixos
     expect(reserveHistory[0].direction).toBe("contribution");
   });
 
-  test("[BUG-A] sequência de ciclos 0 → R$100 → R$200 é determinística (3 posições)", async () => {
+  test("[BUG-A] sequência de ciclos 0 → R$100 em todos os ciclos pagos é determinística (3 posições)", async () => {
     const positions: Array<{
       cycle: number;
       startedAt: Date;
@@ -371,8 +375,8 @@ describeIfDb("QA audit: assinaturas e trial", () => {
         startedAt: new Date(Date.now() - 31 * DAY),
         trialEnds: new Date(Date.now() - 1 * DAY),
         periodEnd: new Date(Date.now() - 1 * DAY),
-        expected: 0,
-        label: "charge1 fecha trial → R$0",
+        expected: 10_000,
+        label: "primeira cobrança depois do trial → R$100",
       },
       {
         cycle: 2,
@@ -380,15 +384,15 @@ describeIfDb("QA audit: assinaturas e trial", () => {
         trialEnds: new Date("2026-08-14T12:00:00Z"),
         periodEnd: new Date("2026-09-13T12:00:00Z"),
         expected: 10_000,
-        label: "charge2 fecha mês2 → R$100",
+        label: "charge2 mantém a mensalidade fixa de R$100",
       },
       {
         cycle: 3,
         startedAt: new Date("2026-06-01T12:00:00Z"),
         trialEnds: new Date("2026-07-01T12:00:00Z"),
         periodEnd: new Date("2026-07-31T12:00:00Z"),
-        expected: 20_000,
-        label: "charge3 fecha mês3 → R$200",
+        expected: 10_000,
+        label: "charge3 mantém a mensalidade fixa de R$100",
       },
     ];
 
@@ -490,6 +494,6 @@ describeIfDb("QA audit: assinaturas e trial", () => {
       `[MISSÃO 3b] após fundir+ativar → success=${recovered.success} amount=${recovered.amountChargedCents} tier=${recovered.tier}`
     );
     expect(recovered.success).toBe(true);
-    expect(recovered.amountChargedCents).toBe(10_000); // ciclo2 → R$100
+    expect(recovered.amountChargedCents).toBe(10_000); // mensalidade fixa após trial
   });
 });
