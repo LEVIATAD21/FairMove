@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ScrollView, StyleSheet } from "react-native";
 import { useRouter } from "expo-router";
-import { AppText, Button, Card, MonogramWatermark, colors, radius, spacing } from "@fairmove/ui";
+import { AppText, Button, Card, MonogramWatermark, colors, spacing } from "@fairmove/ui";
 import { cycleLabel, feeSplitLabel, monthlyFeeLabel } from "../../../src/logic/subscription";
 import { completionPercent } from "../../../src/logic/profile";
 import { api, type DriverMeResponse, type SubscriptionResponse } from "../../../src/services/api";
@@ -93,9 +93,15 @@ export default function DriverProfile() {
       </Card>
 
       <Card variant="solid">
-        <AppText variant="caption" color={colors.gold.DEFAULT}>PLANO TRANSPARENTE</AppText>
-        <AppText variant="bodyStrong">Primeiro mês grátis; depois R$ 100,00 por mês.</AppText>
-        <AppText variant="body">R$ 59,00 para a plataforma e R$ 41,00 para a Reserva de Disciplina e Emergência, sem comissão por corrida.</AppText>
+        <AppText variant="caption" color={colors.gold.DEFAULT}>
+          PLANO TRANSPARENTE
+        </AppText>
+        <AppText variant="bodyStrong">
+          Primeiro mês grátis; depois R$ 100,00 por mês.
+        </AppText>
+        <AppText variant="body">
+          R$ 59,00 para a plataforma e R$ 41,00 para a Reserva de Disciplina e Emergência, sem comissão por corrida.
+        </AppText>
       </Card>
 
             <Card variant="solid">
@@ -113,7 +119,7 @@ export default function DriverProfile() {
         onPress={onLogout}
       />
 
-          </ScrollView>
+    </ScrollView>
   );
 }
 
