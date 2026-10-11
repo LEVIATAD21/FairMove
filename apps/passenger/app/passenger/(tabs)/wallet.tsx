@@ -1,16 +1,34 @@
 import { useCallback, useEffect, useState } from "react";
-import { RefreshControl, ScrollView, StyleSheet, View } from "react-native";
-import { AppText, Card, MonogramWatermark, colors, spacing } from "@fairmove/ui";
+import { Image, Linking, RefreshControl, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { AppText, Button, Card, MonogramWatermark, colors, spacing } from "@fairmove/ui";
 import { formatBRL } from "../../../src/logic/format";
 import {
+  ApiError,
   api,
   type LedgerTransaction,
+  type PixDepositResponse,
   type WalletBalance,
 } from "../../../src/services/api";
 
+const pixFlowAvailableInBuild = typeof __DEV__ !== "undefined" && __DEV__;
+
+function createIdempotencyKey(): string {
+  // Identificador de repetição da requisição, não uma credencial de segurança.
+  return `pix-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function parseBRLAmount(value: string): number {
+  const raw = value.trim().replace(/\s/g, "");
+  const normalized = raw.includes(",")
+    ? raw.replace(/\./g, "").replace(",", ".")
+    : raw;
+  return Number(normalized);
+}
+
 /**
- * Carteira REAL do passageiro: saldo de /wallets/me/balance + extrato de
- * /wallets/:id/transactions. Recarga via gateway não existe ainda (501).
+ * Carteira do passageiro. Todos os valores do ledger chegam em centavos.
+ * O Pix só aparece no build de desenvolvimento até a liquidação/saque de
+ * ganhos dos motoristas estar pronta para produção; nenhum saldo é simulado.
  */
 export default function PassengerWallet() {
   const [balance, setBalance] = useState<WalletBalance | null>(null);
@@ -18,6 +36,11 @@ export default function PassengerWallet() {
   const [loaded, setLoaded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [amountText, setAmountText] = useState("25,00");
+  const [deposit, setDeposit] = useState<PixDepositResponse | null>(null);
+  const [depositBusy, setDepositBusy] = useState(false);
+  const [depositError, setDepositError] = useState<string | null>(null);
+  const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -45,6 +68,51 @@ export default function PassengerWallet() {
     setRefreshing(false);
   };
 
+  const onCreatePix = async () => {
+    if (depositBusy) return;
+    const amount = parseBRLAmount(amountText);
+    if (!Number.isFinite(amount) || Math.round(amount * 100) < 500 || Math.round(amount * 100) > 500000) {
+      setDepositError("Informe um valor entre R$ 5,00 e R$ 5.000,00.");
+      return;
+    }
+    if (Math.abs(amount * 100 - Math.round(amount * 100)) > 0.00001) {
+      setDepositError("Informe no máximo duas casas decimais.");
+      return;
+    }
+
+    const key = idempotencyKey ?? createIdempotencyKey();
+    setIdempotencyKey(key);
+    setDepositBusy(true);
+    setDepositError(null);
+    try {
+      const result = await api.createPixDeposit(amount, key);
+      setDeposit(result);
+      setIdempotencyKey(null);
+      setAmountText("");
+    } catch (cause) {
+      const status = cause instanceof ApiError ? cause.status : 0;
+      setDepositError(
+        status === 503
+          ? "O Pix está indisponível neste ambiente. Nenhum saldo foi alterado."
+          : status === 409
+            ? "Esta tentativa entrou em conflito. Descarte a tentativa ou tente novamente com o mesmo valor."
+            : status === 400
+              ? "Confira o valor informado e tente novamente."
+              : status === 502
+                ? "O provedor de pagamento não respondeu corretamente. Tente novamente sem alterar o valor."
+                : "Não foi possível criar a cobrança Pix. Verifique a conexão e tente novamente."
+      );
+    } finally {
+      setDepositBusy(false);
+    }
+  };
+
+  const resetDeposit = () => {
+    setDeposit(null);
+    setDepositError(null);
+    setIdempotencyKey(null);
+  };
+
   return (
     <ScrollView
       style={styles.screen}
@@ -59,7 +127,7 @@ export default function PassengerWallet() {
         <AppText variant="display" color={colors.gold.DEFAULT}>
           {balance ? formatBRL(balance.availableBalance) : loaded ? "—" : "Carregando..."}
         </AppText>
-        <AppText variant="caption">Sem mensalidade. Sem taxa escondida.</AppText>
+        <AppText variant="caption">O saldo só muda após uma movimentação confirmada pelo backend.</AppText>
         {error ? (
           <AppText variant="caption" color={colors.danger}>
             {error}
@@ -102,13 +170,107 @@ export default function PassengerWallet() {
         )}
       </Card>
 
+      {pixFlowAvailableInBuild ? (
+        <Card>
+          <AppText variant="caption" style={styles.section}>
+            RECARGA VIA PIX
+          </AppText>
+          <AppText variant="body">
+            Geração real via provedor configurado. O saldo só é liberado depois da confirmação assinada do pagamento.
+          </AppText>
+          {!deposit ? (
+            <>
+              <AppText variant="caption">VALOR DA RECARGA (R$ 5,00–R$ 5.000,00)</AppText>
+              <TextInput
+                accessibilityLabel="Valor da recarga Pix em reais"
+                value={amountText}
+                onChangeText={setAmountText}
+                placeholder="25,00"
+                placeholderTextColor={colors.ice.muted}
+                keyboardType="decimal-pad"
+                editable={!depositBusy && idempotencyKey === null}
+                style={styles.amountInput}
+                maxLength={12}
+              />
+              <Button
+                title={depositBusy ? "CRIANDO PIX..." : idempotencyKey ? "TENTAR NOVAMENTE" : "GERAR QR PIX"}
+                onPress={() => void onCreatePix()}
+                disabled={depositBusy}
+              />
+            </>
+          ) : (
+            <View style={styles.depositContent}>
+              <AppText variant="bodyStrong" color={colors.gold.DEFAULT}>
+                {deposit.status === "approved" ? "Pagamento confirmado" : "Aguardando pagamento"}
+              </AppText>
+              <AppText variant="title" color={colors.gold.DEFAULT}>
+                {formatBRL(deposit.amountCents)}
+              </AppText>
+              {deposit.qrCodeBase64 ? (
+                <Image
+                  accessibilityLabel="QR Code Pix da recarga"
+                  source={{ uri: `data:image/png;base64,${deposit.qrCodeBase64}` }}
+                  resizeMode="contain"
+                  style={styles.qrImage}
+                />
+              ) : null}
+              {deposit.qrCode ? (
+                <AppText variant="caption" selectable>
+                  {deposit.qrCode}
+                </AppText>
+              ) : null}
+              {deposit.ticketUrl ? (
+                <Button
+                  title="ABRIR DETALHES DO PIX"
+                  variant="secondary"
+                  onPress={() => {
+                    void Linking.openURL(deposit.ticketUrl!).catch(() => {
+                      setDepositError("Não foi possível abrir a página do provedor.");
+                    });
+                  }}
+                />
+              ) : null}
+              <AppText variant="caption">
+                Após pagar, atualize a tela para conferir o saldo. Ele só será liberado depois da confirmação do provedor.
+              </AppText>
+              <Button title="GERAR OUTRO PIX" variant="secondary" onPress={resetDeposit} />
+            </View>
+          )}
+          {depositError ? (
+            <AppText variant="caption" color={colors.danger}>
+              {depositError}
+            </AppText>
+          ) : null}
+          {depositError && idempotencyKey ? (
+            <Button
+              title="DESCARTAR TENTATIVA E EDITAR VALOR"
+              variant="secondary"
+              disabled={depositBusy}
+              onPress={() => {
+                setIdempotencyKey(null);
+                setDepositError(null);
+              }}
+            />
+          ) : null}
+        </Card>
+      ) : (
+        <Card>
+          <AppText variant="caption" style={styles.section}>
+            RECARGA VIA PIX
+          </AppText>
+          <AppText variant="body">
+            Recargas ficam desativadas nesta versão enquanto o fluxo real de liquidação e saque dos ganhos dos motoristas não estiver configurado e validado.
+          </AppText>
+        </Card>
+      )}
+
       <Card>
         <AppText variant="caption" style={styles.section}>
           COMO FUNCIONA
         </AppText>
         <AppText variant="body">• Você paga somente o valor final da corrida</AppText>
         <AppText variant="body">• Promoções reduzem o valor sem mudar o que o motorista recebe</AppText>
-        <AppText variant="body">• Recarga por Pix só é liberada com liquidação e saque reais</AppText>
+        <AppText variant="body">• Nenhum pagamento é confirmado pela tela: a confirmação vem do backend e do provedor</AppText>
       </Card>
     </ScrollView>
   );
@@ -126,4 +288,16 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
   },
   txInfo: { gap: 2, flex: 1 },
+  amountInput: {
+    minHeight: 48,
+    backgroundColor: colors.graphite.raised,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    borderRadius: 10,
+    paddingHorizontal: spacing.md,
+    color: colors.ice.DEFAULT,
+    fontSize: 18,
+  },
+  depositContent: { alignItems: "center", gap: spacing.md },
+  qrImage: { width: 224, height: 224, backgroundColor: "#FFFFFF", borderRadius: 12 },
 });
