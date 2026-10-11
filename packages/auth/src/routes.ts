@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { db, users, sessions, verificationTokens, onboardingCompletion } from "@fairmove/shared-db";
-import { eq, and, ne } from "drizzle-orm";
+import { eq, and, ne, gt } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "crypto";
 import { sign, verify, TokenExpiredError, JsonWebTokenError } from "jsonwebtoken";
@@ -531,31 +531,50 @@ router.post(
   async (req: Request, res: Response) => {
     try {
       const { token, password } = req.body;
-
-      const found = await db
-        .select()
-        .from(verificationTokens)
-        .where(eq(verificationTokens.token, hashToken(token)));
-
-      if (found.length === 0) {
-        res.status(400).json({ error: "Invalid or expired reset token" });
-        return;
-      }
-
-      if (found[0].expiresAt && found[0].expiresAt.getTime() < Date.now()) {
-        res.status(400).json({ error: "Invalid or expired reset token" });
-        return;
-      }
-
+      // Password-reset tokens are lowercase hex at issuance. Normalize the
+      // pasted representation so mobile keyboard casing does not break it.
+      const tokenHash = hashToken(String(token).toLowerCase());
       const passwordHash = await hashPassword(password);
-      await db
-        .update(users)
-        .set({ passwordHash, updatedAt: new Date() })
-        .where(eq(users.id, found[0].userId));
+      const now = new Date();
 
-      // Token de uso único + força reautenticação
-      await db.delete(verificationTokens).where(eq(verificationTokens.userId, found[0].userId));
-      await db.delete(sessions).where(eq(sessions.userId, found[0].userId));
+      // Consume the token and update password/revoke sessions in the SAME
+      // transaction. Concurrent requests can consume this one-time token once.
+      const didReset = await db.transaction(async (tx) => {
+        const consumed = await tx
+          .delete(verificationTokens)
+          .where(
+            and(
+              eq(verificationTokens.token, tokenHash),
+              gt(verificationTokens.expiresAt, now)
+            )
+          )
+          .returning({ userId: verificationTokens.userId });
+
+        if (consumed.length === 0) return false;
+        if (consumed.length !== 1) {
+          throw new Error("Password reset token uniqueness invariant violated");
+        }
+
+        const userId = consumed[0].userId;
+        const updatedUsers = await tx
+          .update(users)
+          .set({ passwordHash, updatedAt: now })
+          .where(eq(users.id, userId))
+          .returning({ id: users.id });
+        if (updatedUsers.length !== 1) {
+          throw new Error("Password reset target user no longer exists");
+        }
+
+        // Token de uso único + força reautenticação; all operations are atomic.
+        await tx.delete(verificationTokens).where(eq(verificationTokens.userId, userId));
+        await tx.delete(sessions).where(eq(sessions.userId, userId));
+        return true;
+      });
+
+      if (!didReset) {
+        res.status(400).json({ error: "Invalid or expired reset token" });
+        return;
+      }
 
       res.json({ message: "Password has been reset. Please sign in again." });
     } catch (error) {
