@@ -85,9 +85,7 @@ Em produção as credenciais vêm **apenas** de variáveis de ambiente seguras
 4. Confirme a identidade do operador, habilite MFA no provedor operacional e valide o acesso administrativo fora dos apps públicos.
 5. Nunca configure `INITIAL_ADMIN_EMAIL`/`INITIAL_ADMIN_PASSWORD` em produção nem mantenha credenciais iniciais persistentes.
 
-Contas operacionais de E2E (`pnpm db:seed-driver`) usam senhas de
-`.env` (gitignored) — gere com `openssl rand -base64 16` e guarde no
-cofre da equipe; elas nunca são committadas.
+Contas E2E só podem ser criadas em bancos não produtivos com `FAIRMOVE_ENABLE_TEST_SEED=true`; o script recusa `NODE_ENV=production`.
 
 ### Available Scripts
 
@@ -201,7 +199,7 @@ coupon limits, input validation and WS handshake).
 - Account enumeration is mitigated by rate limiting and a uniform
   "if an account exists" response, not fully eliminated.
 - No real PSP is integrated yet. Mock payment endpoints are disabled in production with HTTP 503; card/PIX collection, verified webhooks, reconciliation, and settlement still block a real launch.
-- CI and Docker are being aligned to Node 22 in the current release-readiness pull request; verify the latest GitHub Actions result before merging.
+- The release-readiness PR runs migrations, tests, production Android bundle exports, TypeScript compilation, and a Docker build; verify the latest GitHub Actions result before merging.
 
 ## Backend real + app mobile (staging local)
 
@@ -304,7 +302,7 @@ Garantias da FASE 3:
 
 Os apps de passageiro e motorista têm perfis EAS separados em `apps/passenger/eas.json` e `apps/driver/eas.json`: desenvolvimento, preview interno (APK) e produção (Android App Bundle). Para cada build de produção, configure `EXPO_PUBLIC_API_URL` no ambiente de build EAS como a origem HTTPS da API publicada. A configuração dinâmica rejeita builds de produção sem URL HTTPS, e os clientes móveis não podem cair silenciosamente em `localhost`.
 
-Ainda exigem configuração nas contas do proprietário: vincular os projetos EAS, configurar assinatura Android, implantar a API em domínio HTTPS, cadastrar os segredos de produção, completar a integração PSP real, preparar política de privacidade/Data safety e permissões, testar em dispositivos Android físicos e fazer uma faixa de teste interno no Play Console. Nenhuma publicação é executada automaticamente.
+Ainda exigem configuração nas contas do proprietário: vincular os projetos EAS, configurar assinatura Android, implantar a API em domínio HTTPS, cadastrar os segredos de produção, completar a integração PSP real, configurar um provedor de e-mail transacional se a verificação de e-mail for obrigatória, preparar política de privacidade/Termos/Data safety e permissões, testar em dispositivos Android físicos e fazer uma faixa de teste interno no Play Console. O SOS também precisa de integração real de notificação/dispatch antes de ser divulgado como atendimento de emergência. Nenhuma publicação é executada automaticamente.
 
 ### Endpoints principais (v1)
 | Método | Rota | Observação |
@@ -323,4 +321,4 @@ Ainda exigem configuração nas contas do proprietário: vincular os projetos EA
 | GET | `/api/v1/matching/drivers/nearby?lat&lng&radiusKm` | busca PostGIS |
 | POST | `/api/v1/pricing/quote` | orçamento real (persistido p/ auditoria) |
 | WS | `/ws` + `Sec-WebSocket-Protocol: fairmove.auth` | eventos push (ver FASE 3) |
-| POST | `/api/v1/subscriptions/:id/opt-out` | opt-out irreversível da reserva |
+| POST | `/api/v1/subscriptions/:id/opt-out` | endpoint legado, retorna 410; a contribuição de R$ 41/mês é fixa |
