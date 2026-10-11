@@ -1,7 +1,7 @@
 # ---- build ----
 FROM node:22-alpine AS builder
 
-RUN npm i -g pnpm@11.13.0
+RUN npm i -g pnpm@11.13.1
 
 WORKDIR /usr/src/app
 
@@ -13,7 +13,7 @@ RUN pnpm build
 # ---- run ----
 FROM node:22-alpine AS runner
 
-RUN npm i -g pnpm@11.13.0
+RUN npm i -g pnpm@11.13.1
 
 WORKDIR /usr/src/app
 
