@@ -102,6 +102,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Validate Docker Compose configuration
+        env:
+          POSTGRES_PASSWORD: fairmove_ci_password
+          REDIS_PASSWORD: fairmove_ci_password
+          DATABASE_URL: postgres://fairmove:fairmove_ci_password@postgres:5432/fairmove
+          JWT_SECRET: ci_only_jwt_secret_012345678901234567890123456789012345678901234567890123456789
+          REFRESH_TOKEN_SECRET: ci_only_refresh_secret_012345678901234567890123456789012345678901234567890123456789
+          CORS_ORIGIN: https://ci.fairmove.invalid
+        run: docker compose config --quiet
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
