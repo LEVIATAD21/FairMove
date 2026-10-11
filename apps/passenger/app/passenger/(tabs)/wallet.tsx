@@ -17,6 +17,20 @@ function createIdempotencyKey(): string {
   return `pix-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 }
 
+function isValidCpf(value: string): boolean {
+  const digits = value.replace(/\\D/g, "");
+  if (digits.length !== 11 || /^(\\d)\\1{10}$/.test(digits)) return false;
+  const check = (length: number) => {
+    const sum = [...digits.slice(0, length)].reduce(
+      (total, digit, index) => total + Number(digit) * (length + 1 - index),
+      0
+    );
+    const remainder = (sum * 10) % 11;
+    return remainder === 10 ? 0 : remainder;
+  };
+  return check(9) === Number(digits[9]) && check(10) === Number(digits[10]);
+}
+
 function parseBRLAmount(value: string): number {
   const raw = value.trim().replace(/\s/g, "");
   const normalized = raw.includes(",")
@@ -37,6 +51,7 @@ export default function PassengerWallet() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [amountText, setAmountText] = useState("25,00");
+  const [payerCpf, setPayerCpf] = useState("");
   const [deposit, setDeposit] = useState<PixDepositResponse | null>(null);
   const [depositBusy, setDepositBusy] = useState(false);
   const [depositError, setDepositError] = useState<string | null>(null);
@@ -75,6 +90,10 @@ export default function PassengerWallet() {
       setDepositError("Informe um valor entre R$ 5,00 e R$ 5.000,00.");
       return;
     }
+    if (!isValidCpf(payerCpf)) {
+      setDepositError("Informe um CPF válido com 11 números para gerar o Pix.");
+      return;
+    }
     if (Math.abs(amount * 100 - Math.round(amount * 100)) > 0.00001) {
       setDepositError("Informe no máximo duas casas decimais.");
       return;
@@ -85,10 +104,11 @@ export default function PassengerWallet() {
     setDepositBusy(true);
     setDepositError(null);
     try {
-      const result = await api.createPixDeposit(amount, key);
+      const result = await api.createPixDeposit(amount, key, payerCpf);
       setDeposit(result);
       setIdempotencyKey(null);
       setAmountText("");
+      setPayerCpf("");
     } catch (cause) {
       const status = cause instanceof ApiError ? cause.status : 0;
       setDepositError(
@@ -192,8 +212,23 @@ export default function PassengerWallet() {
                 style={styles.amountInput}
                 maxLength={12}
               />
+              <AppText variant="caption">CPF DO PAGADOR</AppText>
+              <TextInput
+                accessibilityLabel="CPF do pagador Pix"
+                value={payerCpf}
+                onChangeText={(value) => setPayerCpf(value.replace(/\\D/g, "").slice(0, 11))}
+                placeholder="Somente os 11 números"
+                placeholderTextColor={colors.ice.muted}
+                keyboardType="number-pad"
+                editable={!depositBusy && idempotencyKey === null}
+                style={styles.amountInput}
+                maxLength={11}
+              />
+              <AppText variant="caption">
+                O CPF é enviado ao Mercado Pago para identificar o pagamento e não é salvo neste registro de recarga.
+              </AppText>
               <Button
-                title={depositBusy ? "CRIANDO PIX..." : idempotencyKey ? "TENTAR NOVAMENTE" : "GERAR QR PIX"}
+                title={depositBusy ? "CRIANDO PIX..." : idempotencyKey ? "TENTAR NOVAMENTE" : "GERAR QR PIX"
                 onPress={() => void onCreatePix()}
                 disabled={depositBusy}
               />
