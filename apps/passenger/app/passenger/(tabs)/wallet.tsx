@@ -18,8 +18,8 @@ function createIdempotencyKey(): string {
 }
 
 function isValidCpf(value: string): boolean {
-  const digits = value.replace(/\\D/g, "");
-  if (digits.length !== 11 || /^(\\d)\\1{10}$/.test(digits)) return false;
+  const digits = value.replace(/\D/g, "");
+  if (digits.length !== 11 || /^(\d)\1{10}$/.test(digits)) return false;
   const check = (length: number) => {
     const sum = [...digits.slice(0, length)].reduce(
       (total, digit, index) => total + Number(digit) * (length + 1 - index),
@@ -216,7 +216,7 @@ export default function PassengerWallet() {
               <TextInput
                 accessibilityLabel="CPF do pagador Pix"
                 value={payerCpf}
-                onChangeText={(value) => setPayerCpf(value.replace(/\\D/g, "").slice(0, 11))}
+                onChangeText={(value) => setPayerCpf(value.replace(/\D/g, "").slice(0, 11))}
                 placeholder="Somente os 11 números"
                 placeholderTextColor={colors.ice.muted}
                 keyboardType="number-pad"
