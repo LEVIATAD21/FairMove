@@ -18,11 +18,19 @@ import {
  * Sem mocks: dado inexistente chega vazio do servidor — a UI mostra "sem dados".
  */
 
-const DEFAULT_BASE_URL = "http://localhost:3000/api/v1";
+const configuredBaseUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
 
-export const API_BASE_URL = (
-  process.env.EXPO_PUBLIC_API_URL || DEFAULT_BASE_URL
-).replace(/\/+$/, "");
+// Never ship a release that silently points at localhost. Production must use
+// the HTTPS origin of the deployed FairMove API, supplied by the build environment.
+if (!__DEV__ && !configuredBaseUrl) {
+  throw new Error("EXPO_PUBLIC_API_URL must be configured for production builds.");
+}
+if (!__DEV__ && configuredBaseUrl && !configuredBaseUrl.startsWith("https://")) {
+  throw new Error("EXPO_PUBLIC_API_URL must use HTTPS in production.");
+}
+
+const DEFAULT_BASE_URL = "http://localhost:3000/api/v1";
+export const API_BASE_URL = (configuredBaseUrl || DEFAULT_BASE_URL).replace(/\/+$/, "");
 
 export class ApiError extends Error {
   readonly status: number;
