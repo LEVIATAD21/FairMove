@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { db, users, wallets, ledger_transactions, ledger_entries, walletDeposits } from "@fairmove/shared-db";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { createPixDeposit, isMercadoPagoConfigured, MercadoPagoNotConfiguredError, MercadoPagoRequestError, processMercadoPagoPaymentWebhook, WalletDepositConflictError } from "../../payments/src/mercado-pago";
 import { requireAuth, requireRole, requireSelfOrRole } from "../../auth/src/middleware";
