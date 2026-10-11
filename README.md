@@ -43,7 +43,7 @@ FairMove/
 ### Prerequisites
 
 - Node.js 22.x (CI and Docker use Node 22)
-- pnpm 11.13.0+
+- pnpm 11.13.1+
 - Docker (for PostgreSQL and Redis)
 
 ### Setup
@@ -81,16 +81,7 @@ Em produção as credenciais vêm **apenas** de variáveis de ambiente seguras
    ```bash
    pnpm db:migrate
    ```
-3. Provisione a primeira conta administrativa por procedimento operacional privado e auditado. Não use um endpoint público de registro nem inclua painel administrativo nos apps públicos. O procedimento deve atribuir o papel no banco com acesso restrito e registrar a auditoria. Não execute esse passo automaticamente:
-   ```bash
-   curl -X POST http://localhost:3000/api/v1/auth/register \
-     -H 'Content-Type: application/json' \
-     -d '{
-       "name": "Admin FairMove",
-       "email": "admin@fairmove.com.br",
-       "password": "SUA_SENHA_FORTE_AQUI"
-     }'
-   ```
+3. Provisione a primeira conta administrativa somente por um procedimento operacional privado, revisado e auditado, executado por operador autorizado com acesso restrito ao banco. Esse procedimento deve criar a identidade, definir o papel e registrar auditoria; não existe bootstrap administrativo por rota pública e esse passo não deve ser automatizado pelo app.
 4. Confirme a identidade do operador, habilite MFA no provedor operacional e valide o acesso administrativo fora dos apps públicos.
 5. Nunca configure `INITIAL_ADMIN_EMAIL`/`INITIAL_ADMIN_PASSWORD` em produção nem mantenha credenciais iniciais persistentes.
 
