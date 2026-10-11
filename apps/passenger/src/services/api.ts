@@ -332,10 +332,10 @@ export const api = {
     return request<WalletBalance>("/wallets/me/balance");
   },
 
-  createPixDeposit(amount: number, idempotencyKey: string): Promise<PixDepositResponse> {
+  createPixDeposit(amount: number, idempotencyKey: string, payerCpf: string): Promise<PixDepositResponse> {
     return request<PixDepositResponse>("/wallets/deposit", {
       method: "POST",
-      body: { amount, idempotencyKey },
+      body: { amount, idempotencyKey, payerCpf },
     });
   },
 
