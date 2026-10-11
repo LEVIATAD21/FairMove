@@ -65,6 +65,13 @@ export default function PassengerWallet() {
       ]);
       setBalance(balanceResult);
       setTransactions(transactionsResult);
+      // Recover the latest owned deposit after app restart without blocking
+      // the balance/extract if the Pix service is temporarily unavailable.
+      try {
+        setDeposit(await api.getLatestPixDeposit());
+      } catch {
+        // Keep the last known deposit state; balance and extract remain usable.
+      }
       setError(null);
     } catch {
       setError("Não foi possível carregar a carteira.");
@@ -121,6 +128,32 @@ export default function PassengerWallet() {
               : status === 502
                 ? "O provedor de pagamento não respondeu corretamente. Tente novamente sem alterar o valor."
                 : "Não foi possível criar a cobrança Pix. Verifique a conexão e tente novamente."
+      );
+    } finally {
+      setDepositBusy(false);
+    }
+  };
+
+  const refreshDeposit = async () => {
+    if (!deposit || depositBusy) return;
+    setDepositBusy(true);
+    setDepositError(null);
+    try {
+      const refreshed = await api.refreshPixDeposit(deposit.depositId);
+      setDeposit(refreshed);
+      if (refreshed.status === "approved") {
+        await load();
+      }
+    } catch (cause) {
+      const status = cause instanceof ApiError ? cause.status : 0;
+      setDepositError(
+        status === 503
+          ? "A consulta do provedor está indisponível neste ambiente."
+          : status === 502
+            ? "O provedor não respondeu corretamente. Tente novamente em instantes."
+            : status === 404
+              ? "Não encontramos esta cobrança na sua conta."
+              : "Não foi possível atualizar o pagamento. Tente novamente."
       );
     } finally {
       setDepositBusy(false);
@@ -266,9 +299,17 @@ export default function PassengerWallet() {
                 />
               ) : null}
               <AppText variant="caption">
-                Após pagar, atualize a tela para conferir o saldo. Ele só será liberado depois da confirmação do provedor.
+                O saldo só será liberado depois da confirmação do provedor. Não gere outra cobrança enquanto esta estiver pendente.
               </AppText>
-              <Button title="GERAR OUTRO PIX" variant="secondary" onPress={resetDeposit} />
+              <Button
+                title={depositBusy ? "CONSULTANDO..." : "ATUALIZAR STATUS DO PAGAMENTO"}
+                variant="secondary"
+                onPress={() => void refreshDeposit()}
+                disabled={depositBusy}
+              />
+              {deposit.status !== "pending" ? (
+                <Button title="NOVA RECARGA" variant="secondary" onPress={resetDeposit} disabled={depositBusy} />
+              ) : null}
             </View>
           )}
           {depositError ? (
