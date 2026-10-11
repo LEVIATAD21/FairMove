@@ -304,6 +304,22 @@ export const api = {
     });
   },
 
+  forgotPassword(email: string): Promise<{ message: string }> {
+    return request("/auth/forgot-password", {
+      method: "POST",
+      body: { email },
+      auth: false,
+    });
+  },
+
+  resetPassword(token: string, password: string): Promise<{ message: string }> {
+    return request("/auth/reset-password", {
+      method: "POST",
+      body: { token, password },
+      auth: false,
+    });
+  },
+
   async logout(): Promise<void> {
     try {
       await request<void>("/auth/logout", { method: "POST" });
