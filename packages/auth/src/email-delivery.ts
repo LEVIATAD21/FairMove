@@ -45,7 +45,6 @@ async function sendTransactionalEmail(input: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ from, to: [input.to], subject: input.subject, text: input.text, html: input.html }),
-      signal: AbortSignal.timeout(10_000),
     });
   } catch {
     throw new EmailDeliveryError();
