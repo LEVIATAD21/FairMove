@@ -264,7 +264,7 @@ Nota: o engine de pricing pula de R$ 14,53 para R$ 14,62 num intervalo de
 
 ```bash
 pnpm build
-pnpm db:seed-driver
+FAIRMOVE_ENABLE_TEST_SEED=true pnpm db:seed-driver
 pnpm demo:e2e        # 10 critérios medidos, tudo <1s, outputs crus
 ```
 
