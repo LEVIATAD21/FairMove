@@ -102,7 +102,7 @@ cofre da equipe; elas nunca são committadas.
 - `pnpm db:studio` - Open Drizzle Studio
 - `pnpm docker:up` - Start Docker infrastructure
 - `pnpm docker:down` - Stop Docker infrastructure
-- `pnpm db:seed-driver` - Seed idempotente de driver/admin reais (PASSO 4)
+- `FAIRMOVE_ENABLE_TEST_SEED=true pnpm db:seed-driver` - contas E2E em banco não produtivo; o script recusa `NODE_ENV=production`
 - `pnpm e2e:ride` - E2E REST da corrida completa (Postgres real)
 - `pnpm demo:e2e` - Demo E2E tempo real: WebSocket +10 critérios &lt;1s
 
@@ -246,7 +246,7 @@ curl -X POST http://localhost:3000/api/v1/auth/register \
 ### 5. Seed de motorista + E2E da corrida (PASSO 4)
 ```bash
 pnpm build
-pnpm db:seed-driver      # idempotente: joao.silva@fairmove.com.br (driver, mês 1 trial)
+FAIRMOVE_ENABLE_TEST_SEED=true pnpm db:seed-driver # contas E2E; proibido em NODE_ENV=production
                          # + admin@fairmove.com.br para funding via API
                          # senhas em .env (gitignored) — ver "Primeiro Acesso"
 pnpm e2e:ride            # fluxo completo contra o Postgres real
