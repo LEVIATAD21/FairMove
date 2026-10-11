@@ -136,6 +136,12 @@ router.post("/register", validateBody(RegisterSchema), async (req: Request, res:
   try {
     const { name, email, password } = req.body;
 
+    // The code is only stored locally; no transactional email provider exists yet.
+    // Do not create a user that can never receive the required verification code.
+    if (emailVerificationRequired() && process.env.NODE_ENV === "production") {
+      return res.status(503).json({ error: "email_verification_provider_not_configured" });
+    }
+
     const existingUser = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
     if (existingUser.length > 0) {
       // Mensagem única de falha de registro (não confirma qual campo colidiu —
@@ -372,6 +378,11 @@ router.post("/verify-email", validateBody(VerifyEmailSchema), async (req: Reques
 // Reenviar código de verificação (resposta genérica: não revela se existe conta)
 router.post("/resend-verification", validateBody(ForgotPasswordSchema), async (req: Request, res: Response) => {
   try {
+    // No email sender is implemented yet. Fail explicitly rather than claim
+    // that a verification code was delivered when only a hash is stored.
+    if (process.env.NODE_ENV === "production") {
+      return res.status(503).json({ error: "email_delivery_provider_not_configured" });
+    }
     const { email } = req.body as { email: string };
     const response = {
       message: "If an account with this email needs verification, a new code has been sent.",
@@ -434,6 +445,13 @@ router.post(
   validateBody(ForgotPasswordSchema),
   async (req: Request, res: Response) => {
     try {
+      // No production email sender is configured. Returning a success message
+      // while only saving a reset hash would strand the user and misrepresent
+      // account-recovery functionality.
+      if (process.env.NODE_ENV === "production") {
+        return res.status(503).json({ error: "password_reset_provider_not_configured" });
+      }
+
       const { email } = req.body;
 
       const user = await db.select().from(users).where(eq(users.email, email));
