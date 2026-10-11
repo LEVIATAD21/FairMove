@@ -56,7 +56,7 @@ services:
       REFRESH_TOKEN_EXPIRES_IN: 7d
       NODE_ENV: production
       PORT: 3000
-      CORS_ORIGIN: ${CORS_ORIGIN:?Set CORS_ORIGIN explicitly (local development: http://localhost:3000)}
+      CORS_ORIGIN: "${CORS_ORIGIN:?Set CORS_ORIGIN explicitly (local development: http://localhost:3000)}"
       # Sem proxy reverso nesta topologia: manter TRUST_PROXY vazio/false
       # (com "1" sem proxy, X-Forwarded-For forja o IP e burla o rate limit).
       TRUST_PROXY: ${TRUST_PROXY:-false}
