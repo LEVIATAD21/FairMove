@@ -51,17 +51,19 @@ FairMove/
 1. Clone the repository
 2. Install dependencies: `pnpm install`
 3. Configure required variables in an untracked local `.env` file; never commit credentials
-4. Start infrastructure: `docker compose up -d`
-5. Run migrations: `pnpm db:migrate` (or `pnpm db:push` for schema sync)
+4. Start only the local database and cache: `docker compose up -d postgres redis`
+5. Set `DATABASE_URL` to a host-reachable URL using `localhost:5432`, then run versioned migrations: `pnpm db:migrate`
 6. Build the backend: `pnpm build`
-7. Start the backend: `pnpm start`
+7. Start the host backend on the same port used by the apps: `NODE_ENV=development PORT=3000 pnpm start`
 8. Run tests: `pnpm test`
+
+This Quick Start runs the backend on the host. Do not start the Compose `backend` service in this mode; it is for container-network deployment, where `DATABASE_URL` must use the `postgres` service hostname. Apply versioned migrations before starting the containerized backend.
 
 ### Environment configuration
 
 Required variables include `DATABASE_URL`, `JWT_SECRET`, and a distinct `REFRESH_TOKEN_SECRET`; production secrets must be at least 64 characters and must come from a secret manager.
 
-Docker Compose requires `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `DATABASE_URL`, `JWT_SECRET`, and `REFRESH_TOKEN_SECRET`. The backend container resolves PostgreSQL using the `postgres` service hostname and listens on port `3000`. Keep `POSTGRES_PASSWORD` and the password segment of `DATABASE_URL` identical. There is no committed production `.env`; keep local credentials untracked.
+Docker Compose requires `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `DATABASE_URL`, `JWT_SECRET`, a distinct `REFRESH_TOKEN_SECRET`, and an explicit `CORS_ORIGIN`. The containerized backend resolves PostgreSQL using the `postgres` service hostname and listens on port `3000`; the host-run backend uses `localhost` in `DATABASE_URL`. Keep `POSTGRES_PASSWORD` and the password segment of `DATABASE_URL` identical. Production requires an explicit HTTPS CORS origin; only local development may use `http://localhost:3000`. There is no committed production `.env`; keep local credentials untracked.
 
 When running the backend directly on the host instead of through Docker Compose, override only the database hostname in `DATABASE_URL` from `postgres` to `localhost`.
 
@@ -96,7 +98,7 @@ Contas E2E só podem ser criadas em bancos não produtivos com `FAIRMOVE_ENABLE_
 - `pnpm start` - Run the built backend (`dist/backend/src/index.js`)
 - `pnpm db:generate` - Generate a SQL migration from the Drizzle schema
 - `pnpm db:migrate` - Apply pending migrations
-- `pnpm db:push` - Push the schema directly to the database
+- `pnpm db:push` - Disposable local database only; do not use as the migration process for shared, staging, or production databases
 - `pnpm db:studio` - Open Drizzle Studio
 - `pnpm docker:up` - Start Docker infrastructure
 - `pnpm docker:down` - Stop Docker infrastructure
