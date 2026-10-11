@@ -15,7 +15,7 @@ import { getDriverByUserId, loadRide, loadRideForUser } from "./access";
 import { calculateQuote, PRICING_RULES } from "../../pricing/src/engine/calculator";
 import { applyPromotion, releaseRedemptions } from "../../promotions/src/engine/promotion-engine";
 import { setDriverAvailability } from "../../matching/src/engine/matching-engine";
-import { settleRidePayment } from "../../payments/src/settlement";
+import { PaymentProviderNotConfiguredError, settleRidePayment } from "../../payments/src/settlement";
 import { DuplicateOperationError } from "../../wallets/src/engine/wallet-engine";
 import { eventPublisher } from "../../realtime/src/redis/publisher";
 
@@ -668,6 +668,10 @@ router.post("/:rideId/complete", requireAuth, async (req: Request, res: Response
       currency: "BRL",
     });
   } catch (error) {
+    if (error instanceof PaymentProviderNotConfiguredError) {
+      res.status(503).json({ error: "payment_provider_not_configured" });
+      return;
+    }
     if (error instanceof Error && error.name === "InsufficientFundsError") {
       res.status(402).json({ error: "Payment could not be processed" });
       return;
