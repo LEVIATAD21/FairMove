@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { db, walletDeposits } from "@fairmove/shared-db";
-import { DuplicateOperationError, walletEngine } from "../../wallets/src/engine/wallet-engine";
+import { walletEngine } from "../../wallets/src/engine/wallet-engine";
 
 const API = "https://api.mercadopago.com";
 
@@ -278,7 +278,7 @@ export function verifyMercadoPagoWebhookSignature(
 export type MercadoPagoWebhookResult = "ignored" | "pending" | "credited" | "already_processed" | "rejected";
 
 export async function processMercadoPagoPaymentWebhook(dataId: string): Promise<MercadoPagoWebhookResult> {
-  const { accessToken } = requireMercadoPagoConfig();
+  requireMercadoPagoConfig();
   const raw = await providerRequest(`${API}/v1/payments/${encodeURIComponent(dataId)}`, { method: "GET" });
   const payment = parsePayment(raw);
   if (payment.id !== dataId) throw new MercadoPagoRequestError();
@@ -340,24 +340,15 @@ export async function processMercadoPagoPaymentWebhook(dataId: string): Promise<
     }).where(and(eq(walletDeposits.id, current.id), eq(walletDeposits.status, "pending"))).returning({ id: walletDeposits.id });
     if (claimed.length !== 1) return false;
 
-    try {
-      await walletEngine.creditCents(current.userId, current.amountCents, {
-        idempotencyKey: `mercadopago:pix:deposit:${current.id}`,
-        description: "Recarga de carteira via Pix",
-        metadata: {
-          provider: "mercadopago",
-          providerPaymentId: payment.id,
-          depositId: current.id,
-        },
-      }, tx);
-    } catch (error) {
-      if (error instanceof DuplicateOperationError) {
-        // Deposit state and ledger credit are committed atomically. A prior
-        // credit with this key is only safe to accept if the deposit was already
-        // marked approved, which was handled above.
-      }
-      throw error;
-    }
+    await walletEngine.creditCents(current.userId, current.amountCents, {
+      idempotencyKey: `mercadopago:pix:deposit:${current.id}`,
+      description: "Recarga de carteira via Pix",
+      metadata: {
+        provider: "mercadopago",
+        providerPaymentId: payment.id,
+        depositId: current.id,
+      },
+    }, tx);
     return true;
   });
 
