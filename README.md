@@ -69,6 +69,8 @@ When running the backend directly on the host instead of through Docker Compose,
 
 `REDIS_URL` is optional: without it the realtime layer runs as a no-op.
 
+Production authentication mail uses the Resend HTTPS adapter. Set `RESEND_API_KEY` and `EMAIL_FROM` in the deployment secret manager only after verifying the sender/domain in Resend. Never commit these values. Production registration requires email verification; registration, verification resend, and password-recovery flows return HTTP 503 if delivery is unconfigured or rejected by the provider.
+
 ### Primeiro Acesso em Produção
 
 Em produção as credenciais vêm **apenas** de variáveis de ambiente seguras
@@ -304,7 +306,7 @@ Garantias da FASE 3:
 
 Os apps de passageiro e motorista têm perfis EAS separados em `apps/passenger/eas.json` e `apps/driver/eas.json`: desenvolvimento, preview interno (APK) e produção (Android App Bundle). Para cada build de produção, configure `EXPO_PUBLIC_API_URL` no ambiente de build EAS como a origem HTTPS da API publicada. A configuração dinâmica rejeita builds de produção sem URL HTTPS, e os clientes móveis não podem cair silenciosamente em `localhost`.
 
-Ainda exigem configuração nas contas do proprietário: vincular os projetos EAS, configurar assinatura Android, implantar a API em domínio HTTPS, cadastrar os segredos de produção, completar a integração PSP real, integrar entrega de e-mail transacional para recuperação de senha e, quando ativada, verificação/reenviar e-mail (esses endpoints retornam 503 até isso existir), preparar política de privacidade/Termos/Data safety e permissões, testar em dispositivos Android físicos e executar uma faixa de teste interno no Play Console. O SOS também precisa de integração real de notificação/dispatch antes de ser divulgado como atendimento de emergência. Nenhuma publicação é executada automaticamente.
+Ainda exigem configuração nas contas do proprietário: vincular os projetos EAS, configurar assinatura Android, implantar a API em domínio HTTPS real e cadastrar os segredos de produção no cofre de deploy. O adaptador de e-mail Resend está conectado, mas o e-mail de produção não estará ativo até configurar `RESEND_API_KEY` e um `EMAIL_FROM` verificado, e testar a entrega de ponta a ponta. A integração de um provedor de pagamento real (PIX/cartão, webhooks verificados, reconciliação, estornos e disputas) continua pendente; os endpoints financeiros permanecem bloqueados em produção para não simular movimentação de dinheiro. O SOS também precisa de despacho real verificado. O proprietário ainda deve preparar política de privacidade, Termos de Uso, declarações Data safety e justificativas de permissões da Google Play, testar em aparelhos Android físicos e com acessibilidade, e executar uma faixa de teste interno no Play Console. Exports do CI não são AABs assinados e nenhuma publicação foi disparada automaticamente.
 
 ### Endpoints principais (v1)
 | Método | Rota | Observação |
