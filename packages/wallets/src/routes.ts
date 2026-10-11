@@ -1,8 +1,8 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
-import { db, users, wallets, ledger_transactions, ledger_entries } from "@fairmove/shared-db";
+import { db, users, wallets, ledger_transactions, ledger_entries, walletDeposits } from "@fairmove/shared-db";
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { createPixDeposit, MercadoPagoNotConfiguredError, MercadoPagoRequestError, WalletDepositConflictError } from "../../payments/src/mercado-pago";
+import { createPixDeposit, isMercadoPagoConfigured, MercadoPagoNotConfiguredError, MercadoPagoRequestError, processMercadoPagoPaymentWebhook, WalletDepositConflictError } from "../../payments/src/mercado-pago";
 import { requireAuth, requireRole, requireSelfOrRole } from "../../auth/src/middleware";
 import { validateBody, WalletOperationSchema, ReserveOperationSchema } from "@fairmove/validation";
 import {
@@ -71,6 +71,70 @@ router.get("/me/balance", requireAuth, async (req: Request, res: Response) => {
     const wallet = await walletEngine.ensureWallet(req.user!.id);
     res.json(walletResponse(wallet));
   } catch (error) {
+    handleError(res, error);
+  }
+});
+
+function depositPayload(deposit: typeof walletDeposits.$inferSelect) {
+  return {
+    depositId: deposit.id,
+    amountCents: deposit.amountCents,
+    currency: "BRL",
+    status: deposit.status,
+    qrCode: deposit.qrCode,
+    qrCodeBase64: deposit.qrCodeBase64,
+    ticketUrl: deposit.ticketUrl,
+    expiresAt: deposit.expiresAt?.toISOString() ?? null,
+  };
+}
+
+// Recupera somente o último depósito pertencente à própria conta autenticada.
+router.get("/deposits/latest", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const rows = await db
+      .select()
+      .from(walletDeposits)
+      .where(eq(walletDeposits.userId, req.user!.id))
+      .orderBy(desc(walletDeposits.createdAt))
+      .limit(1);
+    return res.json(rows[0] ? depositPayload(rows[0]) : null);
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+// Atualiza o status de um Pix consultando o PSP; nunca confia em estado vindo do app.
+router.post("/deposits/:depositId/refresh", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const depositId = String(req.params.depositId ?? "");
+    const rows = await db
+      .select()
+      .from(walletDeposits)
+      .where(and(eq(walletDeposits.id, depositId), eq(walletDeposits.userId, req.user!.id)))
+      .limit(1);
+    const current = rows[0];
+    if (!current) return res.status(404).json({ error: "deposit_not_found" });
+
+    if (current.status === "pending" && current.providerPaymentId) {
+      if (!isMercadoPagoConfigured()) {
+        return res.status(503).json({ error: "payment_gateway_not_configured" });
+      }
+      await processMercadoPagoPaymentWebhook(current.providerPaymentId);
+    }
+
+    const updated = await db
+      .select()
+      .from(walletDeposits)
+      .where(and(eq(walletDeposits.id, depositId), eq(walletDeposits.userId, req.user!.id)))
+      .limit(1);
+    return res.json(updated[0] ? depositPayload(updated[0]) : { error: "deposit_not_found" });
+  } catch (error) {
+    if (error instanceof MercadoPagoNotConfiguredError) {
+      return res.status(503).json({ error: "payment_gateway_not_configured" });
+    }
+    if (error instanceof MercadoPagoRequestError) {
+      return res.status(502).json({ error: "payment_provider_unavailable" });
+    }
     handleError(res, error);
   }
 });
