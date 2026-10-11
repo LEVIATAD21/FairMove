@@ -94,7 +94,23 @@ app.disable("x-powered-by");
 
 app.use(helmet());
 app.use(compression());
-app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:3000" }));
+const corsOrigin = process.env.CORS_ORIGIN?.trim();
+if (process.env.NODE_ENV === "production") {
+  if (!corsOrigin) {
+    throw new Error("CORS_ORIGIN is required in production; configure the exact public HTTPS origin.");
+  }
+  let parsedCorsOrigin: URL;
+  try {
+    parsedCorsOrigin = new URL(corsOrigin);
+  } catch {
+    throw new Error("CORS_ORIGIN must be a single valid absolute origin.");
+  }
+  const localOrigin = ["localhost", "127.0.0.1", "[::1]"].includes(parsedCorsOrigin.hostname);
+  if (parsedCorsOrigin.protocol !== "https:" && !localOrigin) {
+    throw new Error("CORS_ORIGIN must use HTTPS in production.");
+  }
+}
+app.use(cors({ origin: corsOrigin || "http://localhost:3000" }));
 app.use(morgan("combined"));
 
 const limiter = rateLimit({
