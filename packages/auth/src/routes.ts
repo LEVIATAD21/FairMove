@@ -476,10 +476,9 @@ router.post(
         expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hora
       });
 
-      // TODO: integrar provedor de e-mail (SMTP/Mailgun/SES).
       // O token de reset é SEGREDO: jamais vai para log (vazaria o vetor de
-      // takeover de conta). No dev, o corpo da resposta pode trazê-lo quando
-      // EXPOSE_RESET_TOKEN=true (única via permitida).
+      // takeover de conta). O envio por e-mail de produção permanece bloqueado
+      // até que um provedor real de entrega transacional seja integrado.
       console.info(`[password-reset] userId=${user[0].id} (token redacted from logs)`);
 
       // Em desenvolvimento, permite obter o token para testar o fluxo.
