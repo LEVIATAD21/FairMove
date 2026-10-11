@@ -1,5 +1,5 @@
-import { db, subscriptions, drivers, eventRewards, type Transaction } from "@fairmove/shared-db";
-import { eq, and } from "drizzle-orm";
+import { db, subscriptions, type Transaction } from "@fairmove/shared-db";
+import { eq } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import {
   walletEngine,
@@ -23,10 +23,6 @@ export interface SubscriptionResult {
 
 export function getPlatformUserId(): string {
   return process.env.PLATFORM_USER_ID || "platform";
-}
-
-function periodKey(date: Date): string {
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
 export class SubscriptionEngine {
@@ -108,7 +104,7 @@ export class SubscriptionEngine {
       subscriptionId,
       status: "active",
       message:
-        "Assinatura ativada. Mês 1 grátis. Mês 2: R$ 100,00 (R$ 51,00 plataforma + R$ 49,00 reserva). Mês 3+: R$ 200,00 (R$ 130,00 + R$ 70,00).",
+        "Assinatura ativada: primeiro mês grátis; depois R$ 100,00 por mês, sendo R$ 59,00 para a plataforma e R$ 41,00 para a reserva de emergência.",
     };
   }
 
@@ -122,24 +118,12 @@ export class SubscriptionEngine {
     if (!existing) {
       return { success: false, status: "none", message: "Nenhuma assinatura para este usuário" };
     }
-    if (existing.optedOutOfReserve) {
-      return {
-        success: false,
-        subscriptionId: existing.id,
-        status: existing.status,
-        message: "Opt-out já aplicado (operação irreversível)",
-      };
-    }
-    await db
-      .update(subscriptions)
-      .set({ optedOutOfReserve: true, updatedAt: new Date() })
-      .where(eq(subscriptions.id, existing.id));
     return {
-      success: true,
+      success: false,
       subscriptionId: existing.id,
-      status: existing.status,
+      status: "not_allowed",
       message:
-        "Opt-out aplicado: reserva congelada e mensalidade fixa integralmente para a plataforma (irreversível).",
+        "A contribuição de R$ 41,00 para a Reserva de Disciplina e Emergência faz parte fixa do plano e não pode ser desativada.",
     };
   }
 
@@ -218,38 +202,16 @@ export class SubscriptionEngine {
   }
 
   /**
-   * Resolve o maior cupom de desconto ativo do motorista (FairMove League).
-   * Cupons vencem após `durationMonths` a partir da emissão. Retorna 0 quando
-   * não há cupom vigente.
+   * Cobra a mensalidade fixa:
+   * - Primeiro mês: grátis; não existe débito enquanto o trial está vigente.
+   * - Do segundo mês em diante: R$ 100,00, sendo R$ 59,00 para a plataforma
+   *   e R$ 41,00 para a reserva. O valor nunca progride nem recebe descontos.
+   *
+   * A assinatura só é debitada quando o período vigente venceu. O ciclo do
+   * ledger é explicitamente idempotente para que retries e concorrência não
+   * cobrem duas vezes a mesma competência.
    */
-  private async resolveActiveDiscountPercent(userId: string, now: Date): Promise<number> {
-    const driverRows = await db
-      .select({ id: drivers.id })
-      .from(drivers)
-      .where(eq(drivers.userId, userId))
-      .limit(1);
-    if (driverRows.length === 0) return 0;
-
-    const coupons = await db
-      .select()
-      .from(eventRewards)
-      .where(
-        and(eq(eventRewards.driverId, driverRows[0].id), eq(eventRewards.rewardType, "discount_coupon"))
-      );
-
-    let best = 0;
-    for (const coupon of coupons) {
-      const issuedAt = new Date(coupon.createdAt);
-      const expiresAt = new Date(issuedAt);
-      expiresAt.setMonth(expiresAt.getMonth() + (coupon.durationMonths ?? 1));
-      if (now >= issuedAt && now < expiresAt) {
-        best = Math.max(best, coupon.discountPercent ?? 0);
-      }
-    }
-    return best;
-  }
-
-  /**
+  async chargeMonthlyFee(userId: string): Promise<SubscriptionResult> {  /**
    * Cobra a mensalidade progressiva:
    * - Mês 1: R$ 0,00 (trial) — apenas estende o período.
    * - Mês 2: R$ 100,00 (R$ 51,00 plataforma + R$ 49,00 reserva).
@@ -276,39 +238,13 @@ export class SubscriptionEngine {
     }
 
     const chargeDate = new Date();
-    // BUG-A: o tier é o CICLO CONTADO no estado da assinatura (1 = trial,
-    // 2 = R$100, 3+ = R$200). O calendário do dia do disparo NÃO decide a
-    // regra: atraso de job/admin não pode subir a taxa (R$100 → R$200).
-    const monthsActive = sub.currentBillingCycle || 1;
-    const discountPercent = await this.resolveActiveDiscountPercent(userId, chargeDate);
-    const fee = calculateMonthlyFee({
-      monthsActive,
-      optedOutOfReserve: sub.optedOutOfReserve,
-      discountPercent,
-    });
+    // currentBillingCycle representa o período atualmente coberto. Ao vencer
+    // o trial/ciclo atual, a cobrança é do próximo mês — nunca do mês grátis.
+    const currentCycle = Math.max(1, sub.currentBillingCycle || 1);
+    const monthsActive = Math.max(2, currentCycle + 1);
+    const fee = calculateMonthlyFee({ monthsActive });
 
-    // Mês 1 (trial) — nada a cobrar: apenas estende o período coberto.
-    if (fee.totalFee === 0) {
-      await db
-        .update(subscriptions)
-        .set({
-          currentPeriodStart: chargeDate,
-          currentPeriodEnd: new Date(chargeDate.getTime() + 30 * 24 * 60 * 60 * 1000),
-          currentBillingCycle: monthsActive + 1,
-          updatedAt: new Date(),
-        })
-        .where(eq(subscriptions.id, sub.id));
-      return {
-        success: true,
-        subscriptionId: sub.id,
-        status: "active",
-        tier: fee.tier,
-        amountChargedCents: 0,
-        message: "Mês 1 (trial): mensalidade de R$ 0,00. Período estendido.",
-      };
-    }
-
-    const idempotencyKey = `subscription:${userId}:${periodKey(chargeDate)}`;
+    const idempotencyKey = `subscription:${userId}:cycle:${monthsActive}`;
     const platformUserId = getPlatformUserId();
 
     try {
@@ -321,8 +257,8 @@ export class SubscriptionEngine {
           fee.totalFee,
           {
             idempotencyKey: `${idempotencyKey}:debit`,
-            description: `Mensalidade FairMove — mês ${monthsActive} (${fee.tier})`,
-            metadata: { subscriptionId: sub.id, monthsActive, tier: fee.tier, discountPercent },
+            description: `Mensalidade FairMove — mês ${monthsActive}`,
+            metadata: { subscriptionId: sub.id, monthsActive, tier: fee.tier },
           },
           tx
         );
@@ -369,7 +305,7 @@ export class SubscriptionEngine {
           .set({
             currentPeriodStart: chargeDate,
             currentPeriodEnd: new Date(chargeDate.getTime() + 30 * 24 * 60 * 60 * 1000),
-            currentBillingCycle: monthsActive + 1,
+            currentBillingCycle: monthsActive,
             updatedAt: new Date(),
           })
           .where(eq(subscriptions.id, sub.id));
