@@ -102,7 +102,7 @@ Contas E2E só podem ser criadas em bancos não produtivos com `FAIRMOVE_ENABLE_
 - `pnpm db:studio` - Open Drizzle Studio
 - `pnpm docker:up` - Start Docker infrastructure
 - `pnpm docker:down` - Stop Docker infrastructure
-- `FAIRMOVE_ENABLE_TEST_SEED=true pnpm db:seed-driver` - contas E2E em banco não produtivo; o script recusa `NODE_ENV=production`
+- `NODE_ENV=development FAIRMOVE_ENABLE_TEST_SEED=true pnpm db:seed-driver` - fixtures sintéticas em banco local; exige NODE_ENV development/test, flag explícita e host local/Docker Compose
 - `pnpm e2e:ride` - E2E REST da corrida completa (Postgres real)
 - `pnpm demo:e2e` - Demo E2E tempo real: WebSocket +10 critérios &lt;1s
 
@@ -243,15 +243,15 @@ curl -X POST http://localhost:3000/api/v1/auth/register \
   -d '{"name":"Nome","email":"contato@fairmove.com.br","password":"SUA_SENHA_FORTE_AQUI"}'
 ```
 
-### 5. Seed de motorista + E2E da corrida (PASSO 4)
+### 5. Fixtures sintéticas de motorista + E2E da corrida (somente desenvolvimento)
 ```bash
 pnpm build
-FAIRMOVE_ENABLE_TEST_SEED=true pnpm db:seed-driver # contas E2E; proibido em NODE_ENV=production
+NODE_ENV=development FAIRMOVE_ENABLE_TEST_SEED=true pnpm db:seed-driver # fixtures sintéticas; apenas banco local de E2E
                          # + admin@fairmove.com.br para funding via API
                          # senhas em .env (gitignored) — ver "Primeiro Acesso"
 pnpm e2e:ride            # fluxo completo contra o Postgres real
 ```
-O E2E executa: login motorista → register passageiro → admin credita R$ 50
+O E2E local usa contas sintéticas: login motorista → register passageiro → admin de teste credita R$ 50
 (`POST /wallets/:id/credit`, ledger de dupla entrada) → cria corrida de
 R$ 14,62 (pricing real, 2,3 km) → aceita → `DRIVER_ARRIVING → … → IN_PROGRESS`
 → `complete` com liquidação em transação única (`paymentMethod: "wallet"`,
