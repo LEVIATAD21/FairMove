@@ -104,7 +104,7 @@ export default function DriverProfile() {
         </AppText>
       </Card>
 
-            <Card variant="solid">
+      <Card variant="solid">
         <AppText variant="caption" color={colors.gold.DEFAULT}>
           COMPROMISSO FAIRMOVE
         </AppText>
