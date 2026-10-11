@@ -82,7 +82,12 @@ export default function DriverLogin() {
             </AppText>
           ) : null}
 
-          <Button title={busy ? "ENTRANDO..." : "Entrar"} onPress={onLogin} />
+          <Button title={busy ? "ENTRANDO..." : "Entrar"} onPress={onLogin} disabled={busy} />
+          <Link href="/auth/forgot-password">
+            <AppText variant="bodyStrong" color={colors.gold.DEFAULT}>
+              Esqueci minha senha
+            </AppText>
+          </Link>
         </View>
 
         <View style={styles.footer}>
