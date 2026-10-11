@@ -68,6 +68,12 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+      - name: Validate Expo app and EAS build configuration
+        run: |
+          node --check apps/passenger/app.config.js
+          node --check apps/driver/app.config.js
+          node -e "const fs=require('node:fs'); for (const f of ['apps/passenger/app.json','apps/driver/app.json','apps/passenger/eas.json','apps/driver/eas.json']) JSON.parse(fs.readFileSync(f,'utf8'))"
+
       - name: Build TypeScript
         run: pnpm build
 
