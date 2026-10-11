@@ -45,8 +45,6 @@ export default function PassengerWallet() {
     setRefreshing(false);
   };
 
-  const toCents = (value: number) => Math.round(value * 100);
-
   return (
     <ScrollView
       style={styles.screen}
@@ -59,7 +57,7 @@ export default function PassengerWallet() {
       <Card variant="gold">
         <AppText variant="caption">SALDO DISPONÍVEL</AppText>
         <AppText variant="display" color={colors.gold.DEFAULT}>
-          {balance ? formatBRL(toCents(balance.availableBalance)) : loaded ? "—" : "Carregando..."}
+          {balance ? formatBRL(balance.availableBalance) : loaded ? "—" : "Carregando..."}
         </AppText>
         <AppText variant="caption">Sem mensalidade. Sem taxa escondida.</AppText>
         {error ? (
@@ -97,7 +95,7 @@ export default function PassengerWallet() {
                 }
               >
                 {transaction.transactionType === "credit" ? "+" : "−"}
-                {formatBRL(toCents(transaction.amount))}
+                {formatBRL(transaction.amount)}
               </AppText>
             </View>
           ))
@@ -110,7 +108,7 @@ export default function PassengerWallet() {
         </AppText>
         <AppText variant="body">• Você paga somente o valor final da corrida</AppText>
         <AppText variant="body">• Promoções reduzem o valor sem mudar o que o motorista recebe</AppText>
-        <AppText variant="body">• Recarga com cartão chega com o gateway oficial</AppText>
+        <AppText variant="body">• Recarga por Pix só é liberada com liquidação e saque reais</AppText>
       </Card>
     </ScrollView>
   );
