@@ -13,15 +13,13 @@
  *   3. passageiro carlos.oliveira@fairmove.com.br (role "passenger") —
  *      conta do E2E da corrida (senha sincronizada a cada seed).
  *
- * Senhas: NÃO são embutidas. Vêm de `.env.local` (gitignored) via
+ * Senhas: NÃO são embutidas. Vêm de `.env` (gitignored) via
  * SEED_DRIVER_PASSWORD / SEED_ADMIN_PASSWORD — gere com
  * `openssl rand -base64 16`. O E2E lê as mesmas variáveis.
  *
  * Uso: pnpm build && node dist/scripts/seed-driver.js
  */
 import "dotenv/config";
-import dotenv from "dotenv";
-dotenv.config({ path: ".env.local" });
 import { eq } from "drizzle-orm";
 import { db, users, profiles, drivers, vehicles } from "@fairmove/shared-db";
 import { hashPassword } from "../packages/auth/src/utils/password";
@@ -39,7 +37,7 @@ function requiredPassword(variable: string): string {
   const value = process.env[variable];
   if (!value) {
     throw new Error(
-      `${variable} ausente — defina em .env.local (gitignored) e gere com: openssl rand -base64 16`
+      `${variable} ausente — defina em .env (gitignored) e gere com: openssl rand -base64 16`
     );
   }
   return value;

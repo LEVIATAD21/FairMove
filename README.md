@@ -96,7 +96,7 @@ Em produção as credenciais vêm **apenas** de variáveis de ambiente seguras
    criar a conta (existem só para provisionar o primeiro acesso).
 
 Contas operacionais de E2E (`pnpm db:seed-driver`) usam senhas de
-`.env.local` (gitignored) — gere com `openssl rand -base64 16` e guarde no
+`.env` (gitignored) — gere com `openssl rand -base64 16` e guarde no
 cofre da equipe; elas nunca são committadas.
 
 ### Available Scripts
@@ -262,7 +262,7 @@ curl -X POST http://localhost:3000/api/v1/auth/register \
 pnpm build
 pnpm db:seed-driver      # idempotente: joao.silva@fairmove.com.br (driver, mês 1 trial)
                          # + admin@fairmove.com.br para funding via API
-                         # senhas em .env.local (gitignored) — ver "Primeiro Acesso"
+                         # senhas em .env (gitignored) — ver "Primeiro Acesso"
 pnpm e2e:ride            # fluxo completo contra o Postgres real
 ```
 O E2E executa: login motorista → register passageiro → admin credita R$ 50

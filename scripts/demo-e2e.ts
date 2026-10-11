@@ -13,8 +13,6 @@
  * Uso: pnpm build && pnpm db:seed-driver && pnpm demo:e2e
  */
 import "dotenv/config";
-import dotenv from "dotenv";
-dotenv.config({ path: ".env.local" });
 import { spawnSync } from "child_process";
 import { WebSocket } from "ws";
 import { Client } from "pg";
@@ -161,7 +159,7 @@ class WsProbe {
 function requiredEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
-    throw new Error(`${name} ausente — defina em .env.local (gitignored)`);
+    throw new Error(`${name} ausente — defina em .env (gitignored)`);
   }
   return value;
 }
