@@ -17,7 +17,7 @@ router.get("/:userId", requireAuth, requireSelfOrRole("userId", "admin"), async 
 
     return res.json({
       hasSubscription: true,
-      subscription,
+      subscription: { ...subscription, optedOutOfReserve: false },
     });
   } catch (error) {
     console.error("Get subscription error:", error instanceof Error ? (error.stack ?? error.message) : String(error));
